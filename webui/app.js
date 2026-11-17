@@ -72,11 +72,16 @@ async function loadJobs() {
 }
 const esc = s => String(s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+function videoSrc(id, previewConverted) {
+  return '/video/' + id + (previewConverted ? '?preview=1' : '');
+}
+
 async function selectJob(id) {
   currentJob = await api('/api/jobs/' + id);
   $('#previewCard').hidden = false;
   $('#jobInfo').textContent = currentJob.name + ' — ' + currentJob.width + '×' + currentJob.height + ', ' + fmtTime(currentJob.duration) + ' (' + currentJob.status + ')';
-  const v = $('#video'); v.src = '/video/' + id;
+  const v = $('#video'); v.src = videoSrc(id, currentJob.previewConverted);
+  $('#previewNote').hidden = !currentJob.previewConverted;
   renderRegions();
   $('#downloadLink').hidden = !currentJob.hasExport;
   if (currentJob.hasExport) $('#downloadLink').href = '/download/' + id;
@@ -123,6 +128,13 @@ function startPoll() {
   pollTimer = setInterval(async () => {
     if (!currentJob) return;
     const j = await api('/api/jobs/' + currentJob.id);
+    // The converted preview may finish after the upload: switch the
+    // video over to it (cache-busting query) and show the note.
+    if (j.previewConverted && !currentJob.previewConverted) {
+      const v = $('#video');
+      v.src = videoSrc(j.id, true);
+      $('#previewNote').hidden = false;
+    }
     currentJob = j;
     $('#progress').textContent = (j.status === 'scanning' || j.status === 'exporting') ? j.status + ' ' + Math.round(j.progress * 100) + '%' : (j.message || '');
     if (j.status === 'scanned' || j.status === 'done' || j.status === 'error') { renderRegions(); $('#jobInfo').textContent = j.name + ' — ' + j.width + '×' + j.height + ', ' + fmtTime(j.duration) + ' (' + j.status + ': ' + (j.message || '') + ')'; }
