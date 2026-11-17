@@ -1,3 +1,4 @@
+---
 name: CI
 
 on:
@@ -21,6 +22,9 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+
+      - name: Check bundle script
+        run: python3 -m py_compile scripts/bundle-tesseract.py
 
       - name: Test
         run: go test -v ./...
