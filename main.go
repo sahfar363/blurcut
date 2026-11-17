@@ -14,12 +14,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 func now() time.Time { return time.Now() }
 
@@ -27,18 +28,18 @@ func usage() {
 	fmt.Printf(`BlurCut %s — auto-blur sensitive info in videos (offline)
 
 Usage:
-  blurcut serve [--port 8080] [--data-dir DIR]
+  blurcut                     open the BlurCut app window (Windows)
+  blurcut serve [--port 8080] [--data-dir DIR] [--no-browser]
   blurcut scan <video> --out detections.json
   blurcut blur <video> --regions regions.json --out out.mp4
   blurcut --help
   blurcut --version
 
-The web UI (serve) is the main way to use it: upload a video, Scan,
-review the found regions on the preview, draw manual boxes if needed,
-then Export. The blurred file keeps the original audio and quality.
-
-Needs ffmpeg (and tesseract for auto-scan) next to blurcut.exe or on
-PATH. See README.md for the Windows download links.
+Double-clicking blurcut.exe opens its own app window — no browser tab,
+no URL to type. ffmpeg + tesseract are bundled in the Windows zip and
+are found next to blurcut.exe (or in tools/); the Tools section in the
+UI can also download them. The blurred file keeps the original audio
+and quality. No internet, no API.
 `, version)
 }
 
@@ -54,36 +55,41 @@ func main() {
 		}
 	}
 	cmd := "serve"
+	explicitServe := false
 	args := os.Args[1:]
 	if len(args) > 0 {
 		switch args[0] {
 		case "serve", "scan", "blur":
 			cmd = args[0]
 			args = args[1:]
+			if cmd == "serve" {
+				explicitServe = true
+			}
 		}
 	}
-	tools := detectTools()
 
 	switch cmd {
 	case "scan":
-		if err := runScanCLI(tools, args); err != nil {
+		if err := runScanCLI(args); err != nil {
 			fmt.Fprintln(os.Stderr, "blurcut:", err)
 			os.Exit(1)
 		}
 		return
 	case "blur":
-		if err := runBlurCLI(tools, args); err != nil {
+		if err := runBlurCLI(args); err != nil {
 			fmt.Fprintln(os.Stderr, "blurcut:", err)
 			os.Exit(1)
 		}
 		return
 	}
 
-	// serve
+	// serve (default) / app window
 	fs := flag.NewFlagSet("blurcut", flag.ExitOnError)
 	fs.Usage = usage
 	portFlag := fs.Int("port", 0, "web port")
 	dataFlag := fs.String("data-dir", "", "data directory")
+	noBrowserFlag := fs.Bool("no-browser", false, "do not open the browser")
+	appFlag := fs.Bool("app", false, "open the native app window (Windows)")
 	_ = fs.Parse(args)
 	dataDir := *dataFlag
 	if dataDir == "" {
@@ -102,6 +108,7 @@ func main() {
 			cfg.Port = n
 		}
 	}
+	tools := detectToolsWithConfig(cfg)
 	store, err := openJobStore(dataDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "blurcut: could not open data store:", err)
@@ -110,7 +117,17 @@ func main() {
 	if err := saveConfig(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "blurcut: could not save config:", err)
 	}
-	if err := serve(cfg, tools, store); err != nil {
+	// Double-click (no explicit "serve") on Windows opens the native app
+	// window; "serve" opens the browser. --app forces the window.
+	wantWindow := runtime.GOOS == "windows" && (*appFlag || !explicitServe) && !*noBrowserFlag
+	if wantWindow {
+		if err := runAppMode(cfg, tools, store); err != nil {
+			fmt.Fprintln(os.Stderr, "blurcut:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if err := serveAndOpen(cfg, tools, store, *noBrowserFlag); err != nil {
 		fmt.Fprintln(os.Stderr, "blurcut:", err)
 		os.Exit(1)
 	}
@@ -137,7 +154,7 @@ func parseCLIArgs(fs *flag.FlagSet, args []string) []string {
 	return pos
 }
 
-func runScanCLI(tools Tools, args []string) error {
+func runScanCLI(args []string) error {
 	fs := flag.NewFlagSet("scan", flag.ExitOnError)
 	out := fs.String("out", "detections.json", "output JSON file")
 	// Go's flag package stops at the first positional arg, so flags
@@ -147,18 +164,19 @@ func runScanCLI(tools Tools, args []string) error {
 		return fmt.Errorf("usage: blurcut scan <video> --out detections.json")
 	}
 	video := rest[0]
+	cfg, _ := loadConfig(defaultDataDir())
+	tools := detectToolsWithConfig(cfg)
 	if !tools.FFmpegOK() {
-		return fmt.Errorf("ffmpeg not found")
+		return fmt.Errorf("ffmpeg not found — searched: %s", tools.searchedSummary("ffmpeg"))
 	}
 	if !tools.TesseractOK() {
-		return fmt.Errorf("tesseract not found — auto-scan needs Tesseract OCR")
+		return fmt.Errorf("tesseract not found — searched: %s", tools.searchedSummary("tesseract"))
 	}
-	cfg, _ := loadConfig(defaultDataDir())
 	info, err := probeVideo(tools, video)
 	if err != nil {
 		return err
 	}
-	dets, err := scanVideo(tools.FFmpeg, tools.Tesseract, video, cfg.ScanInterval, cfg.Keywords, cfg.Patterns, info)
+	dets, err := scanVideo(tools, video, cfg.ScanInterval, cfg.Keywords, cfg.Patterns, info)
 	if err != nil {
 		return err
 	}
@@ -170,7 +188,7 @@ func runScanCLI(tools Tools, args []string) error {
 	return nil
 }
 
-func runBlurCLI(tools Tools, args []string) error {
+func runBlurCLI(args []string) error {
 	fs := flag.NewFlagSet("blur", flag.ExitOnError)
 	regionsFile := fs.String("regions", "", "regions JSON file")
 	out := fs.String("out", "", "output mp4")
@@ -178,8 +196,10 @@ func runBlurCLI(tools Tools, args []string) error {
 	if len(rest) < 1 || *regionsFile == "" || *out == "" {
 		return fmt.Errorf("usage: blurcut blur <video> --regions regions.json --out out.mp4")
 	}
+	cfg, _ := loadConfig(defaultDataDir())
+	tools := detectToolsWithConfig(cfg)
 	if !tools.FFmpegOK() {
-		return fmt.Errorf("ffmpeg not found")
+		return fmt.Errorf("ffmpeg not found — searched: %s", tools.searchedSummary("ffmpeg"))
 	}
 	video := rest[0]
 	b, err := os.ReadFile(*regionsFile)
@@ -197,7 +217,6 @@ func runBlurCLI(tools Tools, args []string) error {
 		}
 		regions = wrap.Regions
 	}
-	cfg, _ := loadConfig(defaultDataDir())
 	// Regions from a file may only have relative coords.
 	info, err := probeVideo(tools, video)
 	if err != nil {
