@@ -17,10 +17,48 @@ async function loadStatus() {
     const ts = st.tesseractOk ? 'tesseract ✓' : 'tesseract ✗ (manual boxes only)';
     el.textContent = ff + ' · ' + ts + (st.hasNvenc ? ' · NVENC' : '');
     el.className = 'status ' + (st.ffmpegOk ? 'ok' : 'bad');
-    if (!st.ffmpegOk) $('#uploadMsg').textContent = 'ffmpeg not found — download it from ffmpeg.org (Windows: gyan.dev/ffmpeg/builds), put ffmpeg.exe next to blurcut.exe and restart.';
-    if (!st.tesseractOk) $('#scanMsg').textContent = 'Auto-scan is off: tesseract not found. Install Tesseract (Windows: UB-Mannheim build on GitHub), restart, or draw manual boxes.';
+    if (!st.ffmpegOk) $('#uploadMsg').textContent = 'ffmpeg not found — use Tools below to download it, or put ffmpeg.exe next to blurcut.exe and click Re-check tools.';
+    if (!st.tesseractOk) $('#scanMsg').textContent = 'Auto-scan is off: tesseract not found. Use Tools below to download it, or draw manual boxes.';
   } catch (e) { $('#status').textContent = 'status failed: ' + e.message; }
 }
+
+async function loadTools() {
+  try {
+    const t = await api('/api/tools');
+    const ul = $('#toolList'); ul.innerHTML = '';
+    [['ffmpeg', t.ffmpeg], ['ffprobe', t.ffprobe], ['tesseract', t.tesseract]].forEach(([name, info]) => {
+      const li = document.createElement('li');
+      li.textContent = (info.found ? '✓ ' : '✗ ') + name + ': ' + (info.found ? info.path : 'not found');
+      li.className = info.found ? 'ok' : 'bad';
+      ul.appendChild(li);
+    });
+    if (t.tessdata) { const li = document.createElement('li'); li.textContent = '✓ tessdata: ' + t.tessdata; li.className = 'ok'; ul.appendChild(li); }
+    $('#toolFfmpeg').value = (t.ffmpeg && t.ffmpeg.path) || '';
+    $('#toolTesseract').value = (t.tesseract && t.tesseract.path) || '';
+    const dl = (s) => s && s.state && s.state !== 'idle' ? s.tool + ': ' + s.state + ' — ' + s.message : '';
+    const msgs = [dl(t.ffmpegDownload), dl(t.tesseractDownload)].filter(Boolean);
+    if (msgs.length) $('#toolMsg').textContent = msgs.join(' | ');
+  } catch (e) { $('#toolMsg').textContent = 'Tools check failed: ' + e.message; }
+}
+
+let toolPoll = null;
+function pollToolsWhileBusy() {
+  clearInterval(toolPoll);
+  toolPoll = setInterval(async () => {
+    await loadTools(); await loadStatus();
+    const m = $('#toolMsg').textContent;
+    if (!/downloading|extracting|installing/.test(m)) clearInterval(toolPoll);
+  }, 3000);
+}
+$('#dlFfmpegBtn').onclick = async () => { try { await api('/api/tools/download-ffmpeg', { method: 'POST' }); $('#toolMsg').textContent = 'Downloading ffmpeg…'; pollToolsWhileBusy(); } catch (e) { $('#toolMsg').textContent = 'Download failed: ' + e.message; } };
+$('#dlTessBtn').onclick = async () => { try { await api('/api/tools/download-tesseract', { method: 'POST' }); $('#toolMsg').textContent = 'Downloading Tesseract installer…'; pollToolsWhileBusy(); } catch (e) { $('#toolMsg').textContent = 'Download failed: ' + e.message; } };
+$('#recheckBtn').onclick = async () => { await api('/api/tools/recheck', { method: 'POST' }); $('#toolMsg').textContent = 'Re-checked.'; loadTools(); loadStatus(); };
+$('#saveTools').onclick = async () => {
+  try {
+    await api('/api/tools', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ffmpegPath: $('#toolFfmpeg').value.trim(), tesseractPath: $('#toolTesseract').value.trim() }) });
+    $('#toolSaveMsg').textContent = 'Saved — tools re-detected.'; loadTools(); loadStatus();
+  } catch (e) { $('#toolSaveMsg').textContent = 'Save failed: ' + e.message; }
+};
 
 async function loadJobs() {
   const jobs = await api('/api/jobs');
@@ -166,9 +204,10 @@ $('#setBlur').oninput = e => $('#blurVal').textContent = e.target.value;
 $('#saveSettings').onclick = async () => {
   const cfg = { port: 8080, scanInterval: parseFloat($('#setInterval').value), blurStrength: parseInt($('#setBlur').value, 10),
     keywords: $('#setKeywords').value.split('\n').map(s => s.trim()).filter(Boolean),
-    patterns: { url: $('#patUrl').checked, email: $('#patEmail').checked, password: $('#patPassword').checked, apikey: $('#patApikey').checked } };
+    patterns: { url: $('#patUrl').checked, email: $('#patEmail').checked, password: $('#patPassword').checked, apikey: $('#patApikey').checked },
+    ffmpegPath: ($('#toolFfmpeg') ? $('#toolFfmpeg').value.trim() : ''), tesseractPath: ($('#toolTesseract') ? $('#toolTesseract').value.trim() : '') };
   await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) });
   $('#settingsMsg').textContent = 'Saved.';
 };
 
-loadStatus(); loadJobs();
+loadStatus(); loadTools(); loadJobs();
