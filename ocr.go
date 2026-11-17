@@ -60,7 +60,9 @@ func runTesseract(tesseractPath, tessData, imagePath string) ([]OCRWord, error) 
 
 // scanVideo extracts frames every interval seconds, OCRs each, and returns
 // merged detections. Frames are streamed to a temp dir, never held in RAM.
-func scanVideo(tools Tools, videoPath string, interval float64, keywords []string, patterns map[string]bool, probe VideoInfo) ([]Detection, error) {
+// onProgress (may be nil) is called after each frame is OCRed so a long
+// scan shows real progress instead of sitting at 0% for minutes.
+func scanVideo(tools Tools, videoPath string, interval float64, keywords []string, patterns map[string]bool, probe VideoInfo, onProgress func(done, total int)) ([]Detection, error) {
 	tmp, err := os.MkdirTemp("", "blurcut-scan-*")
 	if err != nil {
 		return nil, err
@@ -87,32 +89,33 @@ func scanVideo(tools Tools, videoPath string, interval float64, keywords []strin
 		// Frame 1 is at t=0, frame n at t=(n-1)*interval.
 		t := float64(i) * interval
 		words, err := runTesseract(tools.Tesseract, tools.TessData, frame)
-		if err != nil {
+		if err == nil && len(words) > 0 {
+			groups := groupWords(words)
+			var frameRegions []Region
+			for _, g := range groups {
+				label, text := FindSensitive([]OCRWord{g}, keywords, patterns)
+				if label == "" {
+					continue
+				}
+				r := Region{
+					Label: label, Text: text,
+					X: g.X, Y: g.Y, W: g.W, H: g.H,
+					Start: t, End: t + interval, Enabled: true, Source: "auto",
+				}
+				padRegion(&r, 8, probe.Width, probe.Height)
+				pixelToRelative(&r, probe.Width, probe.Height)
+				frameRegions = append(frameRegions, r)
+			}
+			for _, r := range mergeBoxes(frameRegions) {
+				raw = append(raw, Detection{Region: r, Frames: 1})
+			}
+		} else if err != nil {
 			ocrErrs++
 			lastErr = err
-			continue // one bad frame must not kill the whole scan
+			// one bad frame must not kill the whole scan
 		}
-		if len(words) == 0 {
-			continue
-		}
-		groups := groupWords(words)
-		var frameRegions []Region
-		for _, g := range groups {
-			label, text := FindSensitive([]OCRWord{g}, keywords, patterns)
-			if label == "" {
-				continue
-			}
-			r := Region{
-				Label: label, Text: text,
-				X: g.X, Y: g.Y, W: g.W, H: g.H,
-				Start: t, End: t + interval, Enabled: true, Source: "auto",
-			}
-			padRegion(&r, 8, probe.Width, probe.Height)
-			pixelToRelative(&r, probe.Width, probe.Height)
-			frameRegions = append(frameRegions, r)
-		}
-		for _, r := range mergeBoxes(frameRegions) {
-			raw = append(raw, Detection{Region: r, Frames: 1})
+		if onProgress != nil {
+			onProgress(i+1, len(frames))
 		}
 	}
 	merged := mergeTimeRanges(raw)
