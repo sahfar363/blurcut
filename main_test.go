@@ -89,7 +89,10 @@ func TestFilterComplexOneRegion(t *testing.T) {
 	if !strings.Contains(fc, "[0:v]split=2[s0][s1]") {
 		t.Errorf("missing split: %s", fc)
 	}
-	if !strings.Contains(fc, "crop=200:30:10:20,boxblur=luma_radius=20") {
+	// 200x30 box with strength 20: luma clamps to 30/2-1 = 14,
+	// chroma to 30/4-1 = 6 (boxblur radius must stay below half
+	// the smallest side of the plane it blurs).
+	if !strings.Contains(fc, "crop=200:30:10:20,boxblur=luma_radius=14:luma_power=1:chroma_radius=6") {
 		t.Errorf("missing crop/boxblur: %s", fc)
 	}
 	if !strings.Contains(fc, "overlay=10:20:enable='between(t,1.00,5.00)'") {
