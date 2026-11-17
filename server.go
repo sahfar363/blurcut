@@ -489,6 +489,11 @@ func (s *server) handleExport(w http.ResponseWriter, r *http.Request, j *Job) {
 			s.store.SetStatus(j, "exporting", "Blurring and re-encoding…", p)
 		})
 		if err != nil {
+			// A failed ffmpeg run leaves a partial (often 0-byte) file
+			// behind — remove it so it can never be offered as a
+			// download later (e.g. after a restart, see openJobStore).
+			_ = os.Remove(j.ExportPath)
+			j.HasExport = false
 			s.store.SetStatus(j, "error", "Export failed: "+err.Error(), 0)
 			return
 		}
