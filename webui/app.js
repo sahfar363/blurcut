@@ -1,6 +1,17 @@
 // BlurCut web UI — no CDN, no external requests. All fetch() is local.
 const $ = s => document.querySelector(s);
 let currentJob = null, pollTimer = null;
+let drawMode = false;
+
+// Drawing is OFF by default so clicks reach the video and its controls.
+// Turning it on lets the overlay catch drags to draw a manual box.
+function setDrawMode(on) {
+  drawMode = on;
+  const ov = $('#overlay'), btn = $('#drawToggleBtn'), hint = $('#drawHint');
+  if (ov) ov.style.pointerEvents = drawMode ? 'auto' : 'none';
+  if (btn) { btn.textContent = drawMode ? '✏️ Drawing: ON' : '✏️ Draw a box'; btn.classList.toggle('active', drawMode); }
+  if (hint) hint.hidden = !drawMode;
+}
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -79,6 +90,7 @@ function videoSrc(id, previewConverted) {
 
 async function selectJob(id) {
   currentJob = await api('/api/jobs/' + id);
+  setDrawMode(false);
   $('#previewCard').hidden = false;
   $('#jobInfo').textContent = currentJob.name + ' — ' + currentJob.width + '×' + currentJob.height + ', ' + fmtTime(currentJob.duration) + ' (' + currentJob.status + ')';
   const v = $('#video'); v.src = videoSrc(id, currentJob.previewConverted);
@@ -177,11 +189,13 @@ $('#exportBtn').onclick = async () => {
   catch (e) { $('#progress').textContent = 'Export failed: ' + e.message; }
 };
 
-// draw a manual box on the video
+// draw a manual box on the video (only while drawing mode is on)
+$('#drawToggleBtn').onclick = () => setDrawMode(!drawMode);
 (function () {
   const wrap = $('#videoWrap'), v = $('#video'), ov = $('#overlay');
   let start = null, box = null;
   ov.addEventListener('mousedown', e => {
+    if (!drawMode) return;
     if (e.target !== ov) return;
     const r = ov.getBoundingClientRect();
     start = { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
@@ -204,6 +218,7 @@ $('#exportBtn').onclick = async () => {
     const t = v.currentTime;
     const reg = await api('/api/jobs/' + currentJob.id + '/regions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rx, ry, rw, rh, start: t, end: t + 5 }) });
     currentJob.regions.push(reg); renderRegions();
+    setDrawMode(false); // box drawn — back to playback mode so play works right away
   });
   v.addEventListener('timeupdate', renderRegions);
   // If the preview file itself will not play (odd codec, bad remux, …),
