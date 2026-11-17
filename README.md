@@ -24,7 +24,7 @@ DaVinci.
 1. Download the latest release zip from
    [Releases](https://github.com/sahfar363/blurcut/releases)
    — it contains `blurcut.exe` plus everything it needs in `tools/`:
-   `ffmpeg.exe`, `tesseract.exe` (+ its DLLs) and
+   `ffmpeg.exe`, `ffprobe.exe`, `tesseract.exe` (+ its DLLs) and
    `tessdata/eng.traineddata`.
 2. Unzip it to a folder, e.g. `C:\blurcut`. Keep the `tools/` folder
    next to `blurcut.exe`.
@@ -70,8 +70,15 @@ can be downloaded from there (ffmpeg) or via the official installer
 
 The Windows zip bundles ffmpeg (GPLv3 — see
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)) and Tesseract
-(Apache 2.0). `ffprobe.exe` is optional: BlurCut uses `ffmpeg -i`
-when ffprobe is absent, so it is not bundled — the zip stays smaller.
+(Apache 2.0), including `ffprobe.exe`, so all three Tools rows show
+green ✓ ticks.
+
+**Any video format plays in the preview.** Edge cannot play .mkv,
+.mov, .avi or HEVC files directly, so when you upload one of those
+BlurCut builds a playable mp4 preview in the background (h264 video
+is just remuxed, no quality loss; anything else is re-encoded at
+most 1280 wide). The preview is only for watching — scanning and
+export always use your original file.
 
 ## Build from source
 
