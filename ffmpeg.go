@@ -547,10 +547,22 @@ func buildFilterComplex(regions []Region, blurStrength int, frameW, frameH int) 
 	}
 	b.WriteString(";")
 	for i, r := range enabled {
-		// boxblur chroma radius must stay < 15; luma carries the blur.
-		chroma := min(blurStrength, 10)
+		// boxblur radius must stay below half the smallest side of
+		// the plane it blurs (ffmpeg rejects larger values with
+		// -22). A single text line can be ~20px tall, so strength 20
+		// would fail the whole export on small regions — clamp the
+		// radii per region instead. Chroma planes are half-resolution
+		// in yuv420p, so their limit is a quarter of the box size.
+		luma := min(blurStrength, r.W/2-1, r.H/2-1)
+		if luma < 0 {
+			luma = 0
+		}
+		chroma := min(blurStrength, 10, r.W/4-1, r.H/4-1)
+		if chroma < 0 {
+			chroma = 0
+		}
 		fmt.Fprintf(&b, "[s%d]crop=%d:%d:%d:%d,boxblur=luma_radius=%d:luma_power=1:chroma_radius=%d:chroma_power=1[b%d];",
-			i+1, r.W, r.H, r.X, r.Y, blurStrength, chroma, i)
+			i+1, r.W, r.H, r.X, r.Y, luma, chroma, i)
 	}
 	cur := "s0"
 	for i, r := range enabled {
@@ -579,14 +591,16 @@ func enabledRegions(regions []Region) []Region {
 // Fallbacks, in order: h264_nvenc (if listed) → libx264 with audio copy
 // → libx264 with audio re-encoded to AAC (mkv audio like Vorbis/Opus/PCM
 // cannot be copied into mp4, so a copy-only export would fail outright).
-func exportVideo(tools Tools, input, output string, regions []Region, blurStrength int, onProgress func(float64)) error {
+// Returns the encoder path that succeeded ("h264_nvenc", "libx264+copy"
+// or "libx264+aac") so the UI can say how the file was made.
+func exportVideo(tools Tools, input, output string, regions []Region, blurStrength int, onProgress func(float64)) (string, error) {
 	info, err := probeVideo(tools, input)
 	if err != nil {
-		return err
+		return "", err
 	}
 	fc := buildFilterComplex(regions, blurStrength, info.Width, info.Height)
 	if fc == "" {
-		return fmt.Errorf("no enabled blur regions")
+		return "", fmt.Errorf("no enabled blur regions")
 	}
 	run := func(encArgs []string, audio string) error {
 		args := []string{"-hide_banner", "-y", "-i", input,
@@ -639,7 +653,7 @@ func exportVideo(tools Tools, input, output string, regions []Region, blurStreng
 	x264 := []string{"-c:v", "libx264", "-crf", "18", "-preset", "veryfast"}
 	if tools.HasNVENC {
 		if err := run([]string{"-c:v", "h264_nvenc", "-cq", "23"}, "copy"); err == nil {
-			return nil
+			return "h264_nvenc", nil
 		} else {
 			// NVENC listed but no usable GPU — fall through to libx264.
 			if onProgress != nil {
@@ -648,7 +662,7 @@ func exportVideo(tools Tools, input, output string, regions []Region, blurStreng
 		}
 	}
 	if err := run(x264, "copy"); err == nil {
-		return nil
+		return "libx264+copy", nil
 	} else {
 		if onProgress != nil {
 			onProgress(0)
@@ -656,7 +670,33 @@ func exportVideo(tools Tools, input, output string, regions []Region, blurStreng
 	}
 	// Audio copy failed (e.g. Vorbis/Opus in an .mkv cannot go into mp4)
 	// — retry the same encode with the audio re-encoded to AAC.
-	return run(x264, "aac")
+	if err := run(x264, "aac"); err != nil {
+		return "", err
+	}
+	return "libx264+aac", nil
+}
+
+// verifyExport checks that an export actually produced a playable mp4:
+// the file must exist, be non-empty, and probe to a video stream with a
+// duration. ffmpeg can exit 0 yet leave a broken or empty file behind,
+// so the UI must never offer such a file as "done" — a bad export is
+// reported as an error with the reason instead.
+func verifyExport(tools Tools, path string) error {
+	st, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("export file missing: %v", err)
+	}
+	if st.Size() == 0 {
+		return fmt.Errorf("export file is empty (0 bytes)")
+	}
+	info, err := probeVideo(tools, path)
+	if err != nil {
+		return fmt.Errorf("export file is not a readable video: %v", err)
+	}
+	if info.Width <= 0 || info.Duration <= 0 {
+		return fmt.Errorf("export file has no video stream (width=%d duration=%.1f)", info.Width, info.Duration)
+	}
+	return nil
 }
 
 // parseProgressTime parses "HH:MM:SS.xx" from ffmpeg stderr into seconds.
