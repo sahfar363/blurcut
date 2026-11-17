@@ -9,12 +9,15 @@ import (
 )
 
 type Config struct {
-	Port         int             `json:"port"`
-	DataDir      string          `json:"dataDir"`
-	ScanInterval float64         `json:"scanInterval"` // seconds between scanned frames
-	BlurStrength int             `json:"blurStrength"` // boxblur radius 10-30
-	Keywords     []string        `json:"keywords"`     // custom case-insensitive substrings
-	Patterns     map[string]bool `json:"patterns"`     // url,email,password,apikey toggles
+	Port          int             `json:"port"`
+	DataDir       string          `json:"dataDir"`
+	ScanInterval  float64         `json:"scanInterval"`  // seconds between scanned frames
+	BlurStrength  int             `json:"blurStrength"`  // boxblur radius 10-30
+	Keywords      []string        `json:"keywords"`      // custom case-insensitive substrings
+	Patterns      map[string]bool `json:"patterns"`      // url,email,password,apikey toggles
+	FfmpegPath    string          `json:"ffmpegPath"`    // empty = auto-detect
+	FfprobePath   string          `json:"ffprobePath"`   // empty = auto-detect
+	TesseractPath string          `json:"tesseractPath"` // empty = auto-detect
 }
 
 const defaultPort = 8080
