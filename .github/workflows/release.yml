@@ -1,3 +1,4 @@
+---
 name: Release
 
 on:
@@ -21,6 +22,35 @@ jobs:
           go-version: "1.23"
           cache: true
 
+      # The Windows zip is one download with everything in it:
+      # blurcut.exe + tools/ffmpeg.exe + tools/tesseract.exe (+ its DLLs)
+      # + tools/tessdata/eng.traineddata. No separate downloads needed.
+      - name: Download Windows ffmpeg (pinned 8.1.2, SHA-256 checked)
+        run: |
+          curl -fsSL -o ffmpeg-win.zip "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip"
+          echo "db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec  ffmpeg-win.zip" | sha256sum -c -
+          unzip -o -q ffmpeg-win.zip "ffmpeg-8.1.2-essentials_build/bin/ffmpeg.exe"
+          mkdir -p win-bundle/tools
+          cp ffmpeg-8.1.2-essentials_build/bin/ffmpeg.exe win-bundle/tools/
+          test -f win-bundle/tools/ffmpeg.exe
+
+      - name: Download + extract Windows Tesseract (UB-Mannheim 5.5.3)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq p7zip-full
+          curl -fsSL -o tesseract-setup.exe "https://github.com/tesseract-ocr/tesseract/releases/download/5.5.3/tesseract-ocr-w64-setup-5.5.3.20260724.exe"
+          mkdir -p tess-extract
+          7z x -y -otess-extract tesseract-setup.exe > /dev/null
+          python3 scripts/bundle-tesseract.py --src tess-extract --dest win-bundle/tools
+          mkdir -p win-bundle/tools/tessdata
+          curl -fsSL -o win-bundle/tools/tessdata/eng.traineddata "https://github.com/tesseract-ocr/tessdata_fast/raw/main/eng.traineddata"
+          # The installer also ships tesseract configs (tsv, txt, …) — copy
+          # them too if present. The app does not need them (it requests TSV
+          # with -c tessedit_create_tsv=1), but they make the bundle complete.
+          if [ -d tess-extract/tessdata/configs ]; then cp -r tess-extract/tessdata/configs win-bundle/tools/tessdata/configs; fi
+          test -f win-bundle/tools/tesseract.exe
+          test -f win-bundle/tools/tessdata/eng.traineddata
+          ls win-bundle/tools/ | wc -l
+
       - name: Test and build (linux amd64 + arm64, windows amd64)
         run: |
           go vet ./...
@@ -28,7 +58,12 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o blurcut-linux-amd64 .
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o blurcut-linux-arm64 .
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o blurcut.exe .
-          zip -j blurcut-windows-amd64.zip blurcut.exe README.md
+          cp blurcut.exe win-bundle/blurcut.exe
+          cp README.md win-bundle/README.md
+          cp THIRD-PARTY-NOTICES.md win-bundle/THIRD-PARTY-NOTICES.md
+          cd win-bundle && zip -r ../blurcut-windows-amd64.zip . && cd ..
+          unzip -l blurcut-windows-amd64.zip | tail -5
+          ls -lh blurcut-windows-amd64.zip
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
