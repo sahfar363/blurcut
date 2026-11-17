@@ -291,12 +291,29 @@ func (s *server) handleJobs(w http.ResponseWriter, r *http.Request) {
 	}
 	j := &Job{
 		ID: id, Name: hdr.Filename, VideoPath: videoPath,
-		ExportPath: filepath.Join(s.cfg.DataDir, "exports", id+"_blurred.mp4"),
-		Duration:   info.Duration, Width: info.Width, Height: info.Height, FPS: info.FPS,
+		ExportPath:  filepath.Join(s.cfg.DataDir, "exports", id+"_blurred.mp4"),
+		PreviewPath: filepath.Join(s.cfg.DataDir, "uploads", id+"_preview.mp4"),
+		Duration:    info.Duration, Width: info.Width, Height: info.Height, FPS: info.FPS,
 		Status: "uploaded", Detections: []Detection{}, Regions: []Region{},
 		CreatedAt: now(),
 	}
 	s.store.Add(j)
+	// Edge/WebView2 cannot play .mkv/.mov/.avi/HEVC etc. — build a
+	// playable mp4 preview in the background. The upload response does
+	// not wait for it; scan/export keep using the original file.
+	if !isBrowserPlayable(info) {
+		s.store.SetStatus(j, "uploaded", "Preparing preview so this video plays here…", 0)
+		go func() {
+			tools := s.getTools()
+			if err := makePreview(tools, videoPath, j.PreviewPath, info); err != nil {
+				// Preview is a convenience only — never block the job.
+				s.store.SetStatus(j, "uploaded", "Preview could not be prepared ("+err.Error()+") — the original still works for scan/export.", 0)
+				return
+			}
+			j.PreviewConverted = true
+			s.store.SetStatus(j, "uploaded", "Preview ready.", 0)
+		}()
+	}
 	writeJSON(w, 201, j)
 }
 
@@ -483,7 +500,15 @@ func (s *server) handleVideo(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	f, err := os.Open(j.VideoPath)
+	// Serve the converted mp4 preview when one exists (Edge cannot play
+	// .mkv/.mov/.avi/HEVC originals); otherwise the original file.
+	path, name := j.VideoPath, j.Name
+	if j.PreviewConverted {
+		if _, err := os.Stat(j.PreviewPath); err == nil {
+			path, name = j.PreviewPath, "preview.mp4"
+		}
+	}
+	f, err := os.Open(path)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -491,7 +516,7 @@ func (s *server) handleVideo(w http.ResponseWriter, r *http.Request) {
 	defer f.Close()
 	st, _ := f.Stat()
 	// ServeContent handles HTTP Range, so the <video> tag can seek.
-	http.ServeContent(w, r, j.Name, st.ModTime(), f)
+	http.ServeContent(w, r, name, st.ModTime(), f)
 }
 
 func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
