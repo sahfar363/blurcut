@@ -165,8 +165,12 @@ func TestExportAudioFallback(t *testing.T) {
 	tools := Tools{FFmpeg: fakeFF, FFprobe: ffprobe}
 	regions := []Region{{X: 10, Y: 10, W: 100, H: 20, Start: 0, End: 2, Enabled: true}}
 	out := filepath.Join(dir, "out.mp4")
-	if err := exportVideo(tools, video, out, regions, 20, nil); err != nil {
+	enc, err := exportVideo(tools, video, out, regions, 20, nil)
+	if err != nil {
 		t.Fatalf("exportVideo should fall back to AAC, got: %v", err)
+	}
+	if enc != "libx264+aac" {
+		t.Errorf("encoder = %q, want libx264+aac", enc)
 	}
 	if _, err := os.Stat(out); err != nil {
 		t.Fatalf("output file missing: %v", err)
