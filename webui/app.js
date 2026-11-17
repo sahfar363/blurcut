@@ -12,6 +12,7 @@ const fmtTime = s => { s = Math.max(0, s); const m = Math.floor(s / 60), sec = M
 async function loadStatus() {
   try {
     const st = await api('/api/status');
+    if (st.version) document.querySelector('header h1').textContent = 'BlurCut v' + st.version;
     const el = $('#status');
     const ff = st.ffmpegOk ? 'ffmpeg ✓' : 'ffmpeg ✗';
     const ts = st.tesseractOk ? 'tesseract ✓' : 'tesseract ✗ (manual boxes only)';
@@ -136,7 +137,11 @@ function startPoll() {
       $('#previewNote').hidden = false;
     }
     currentJob = j;
-    $('#progress').textContent = (j.status === 'scanning' || j.status === 'exporting') ? j.status + ' ' + Math.round(j.progress * 100) + '%' : (j.message || '');
+    // Scanning message carries live frame counts ("frame 120/240 (50%)");
+    // exporting shows the % from the ffmpeg time= progress.
+    $('#progress').textContent = j.status === 'scanning' ? (j.message || 'Scanning…')
+      : j.status === 'exporting' ? 'Exporting ' + Math.round(j.progress * 100) + '%'
+      : (j.message || '');
     if (j.status === 'scanned' || j.status === 'done' || j.status === 'error') { renderRegions(); $('#jobInfo').textContent = j.name + ' — ' + j.width + '×' + j.height + ', ' + fmtTime(j.duration) + ' (' + j.status + ': ' + (j.message || '') + ')'; }
     if (j.hasExport) { $('#downloadLink').hidden = false; $('#downloadLink').href = '/download/' + j.id; }
     if (j.status === 'done' || j.status === 'error' || j.status === 'scanned') loadJobs();
@@ -201,6 +206,17 @@ $('#exportBtn').onclick = async () => {
     currentJob.regions.push(reg); renderRegions();
   });
   v.addEventListener('timeupdate', renderRegions);
+  // If the preview file itself will not play (odd codec, bad remux, …),
+  // say so plainly and offer a reload — the file is still fine for
+  // scan/export, which never use the preview.
+  v.addEventListener('error', () => {
+    const e = $('#videoError');
+    e.textContent = 'This preview could not play in the app — the file itself is fine for scan/export. Try reloading the preview.';
+    e.hidden = false;
+    $('#reloadPreviewBtn').hidden = false;
+  });
+  v.addEventListener('loadstart', () => { $('#videoError').hidden = true; $('#reloadPreviewBtn').hidden = true; });
+  $('#reloadPreviewBtn').onclick = () => { const vv = $('#video'); vv.load(); };
 })();
 
 // settings
