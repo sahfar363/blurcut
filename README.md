@@ -10,7 +10,8 @@ DaVinci.
   keywords (your email, username, …).
 - **Review first** — every found region shows on the video preview with
   its time range. Untick false alarms, delete them, or draw a manual
-  box by dragging on the video.
+  box: click "✏️ Draw a box" first, drag on the video, and drawing
+  turns itself off again so you can press play right away.
 - **Fast export** — only the blurred boxes are re-encoded by ffmpeg
   (hardware NVENC if your GPU has it, otherwise libx264). Audio is
   copied untouched, original quality kept.
@@ -86,8 +87,15 @@ divisible by 2"). Export now forces the output to even dimensions
 (shrinking by at most 1px) and clamps every blur box to the frame, so
 those videos export instead of failing. If an export still fails, the
 error message now shows ffmpeg's real reason instead of a generic
-"Conversion failed!". The version (e.g. v0.2.2) is shown in the header
+"Conversion failed!". The version (e.g. v0.2.3) is shown in the header
 so you can check which build you are running.
+
+**The play button works now.** In 0.2.2 and earlier, the drawing layer
+sat on top of the video and swallowed every click — including clicks on
+the play button — so the video could never be started with the mouse
+and just sat on its first frame. Drawing is now a toggle (off by
+default, and it switches itself off after you draw a box), so clicks
+reach the video controls normally.
 
 ## Build from source
 
