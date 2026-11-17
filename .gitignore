@@ -1,0 +1,8 @@
+blurcut
+blurcut.exe
+*.mp4
+*.mov
+*.mkv
+*.avi
+testdata/
+.blurcut/
