@@ -87,8 +87,7 @@ divisible by 2"). Export now forces the output to even dimensions
 (shrinking by at most 1px) and clamps every blur box to the frame, so
 those videos export instead of failing. If an export still fails, the
 error message now shows ffmpeg's real reason instead of a generic
-"Conversion failed!". The version (e.g. v0.2.3) is shown in the header
-so you can check which build you are running.
+"Conversion failed!".
 
 **The play button works now.** In 0.2.2 and earlier, the drawing layer
 sat on top of the video and swallowed every click — including clicks on
@@ -96,6 +95,16 @@ the play button — so the video could never be started with the mouse
 and just sat on its first frame. Drawing is now a toggle (off by
 default, and it switches itself off after you draw a box), so clicks
 reach the video controls normally.
+
+**Downloads are real .mp4 files.** The blurred export is always an
+mp4, and the download is now always named `blurred-<name>.mp4` — in
+0.2.3 and earlier it kept the original file's extension (e.g.
+`blurred-clip.mkv`), so players like VLC picked the wrong format from
+the name and refused to open a perfectly valid file. Every export is
+also verified before it is offered (file exists, non-empty, probes as
+a video with a duration); a bad export is reported as an error with
+the reason instead of a silent "done". The version (e.g. v0.2.4) is
+shown in the header so you can check which build you are running.
 
 ## Build from source
 
