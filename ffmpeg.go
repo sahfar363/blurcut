@@ -336,17 +336,16 @@ func isBrowserPlayable(info VideoInfo) bool {
 }
 
 // makePreview converts input into a browser-playable mp4 at output.
-// h264 video is remuxed (-c:v copy, no quality loss, near-instant);
-// anything else is re-encoded to libx264 CRF 20, downscaled to at most
-// 1280 wide. Audio is copied when possible, else re-encoded to AAC.
-// The preview is only for playback in the UI — scan/export keep using
-// the original file.
+// h264 video with EVEN dimensions is remuxed (-c:v copy, no quality
+// loss, near-instant); anything else is re-encoded to libx264 CRF 20,
+// downscaled to at most 1280 wide. Audio is copied when possible, else
+// re-encoded to AAC. The preview is only for playback in the UI —
+// scan/export keep using the original file.
 func makePreview(tools Tools, input, output string, info VideoInfo) error {
 	if tools.FFmpeg == "" {
 		return fmt.Errorf("ffmpeg not found")
 	}
-	remux := strings.ToLower(info.Codec) == "h264" || strings.ToLower(info.Codec) == "avc"
-	if remux {
+	if canRemuxPreview(info) {
 		args := []string{"-hide_banner", "-y", "-i", input,
 			"-map", "0:v:0", "-map", "0:a?", "-c", "copy",
 			"-movflags", "+faststart", output}
@@ -360,20 +359,91 @@ func makePreview(tools Tools, input, output string, info VideoInfo) error {
 			"-movflags", "+faststart", output}
 		cmd := exec.Command(tools.FFmpeg, args...)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("preview remux failed: %w: %s", err, firstLine(string(out)))
+			return fmt.Errorf("preview remux failed: %w: %s", err, extractErrorLines(string(out)))
 		}
 		return nil
 	}
 	args := []string{"-hide_banner", "-y", "-i", input,
 		"-map", "0:v:0", "-map", "0:a?",
-		"-vf", "scale='min(1280,iw)':-2",
+		"-vf", previewScaleFilter(),
 		"-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
 		"-c:a", "aac", "-movflags", "+faststart", output}
 	cmd := exec.Command(tools.FFmpeg, args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("preview transcode failed: %w: %s", err, firstLine(string(out)))
+		return fmt.Errorf("preview transcode failed: %w: %s", err, extractErrorLines(string(out)))
 	}
 	return nil
+}
+
+// canRemuxPreview reports whether the video can be copied straight into
+// an mp4 container: h264 video AND even dimensions. An odd-dimension
+// remux produces an mp4 that libx264/yuv420p (and some players) reject,
+// so odd videos fall through to the re-encode path instead.
+func canRemuxPreview(info VideoInfo) bool {
+	c := strings.ToLower(info.Codec)
+	if c != "h264" && c != "avc" {
+		return false
+	}
+	return info.Width%2 == 0 && info.Height%2 == 0
+}
+
+// previewScaleFilter is the -vf for the re-encode path. Both output
+// dimensions are forced even (libx264 + yuv420p need that), capped at
+// 1280 wide, aspect kept.
+func previewScaleFilter() string {
+	return "scale='trunc(min(1280,iw)/2)*2':-2,format=yuv420p"
+}
+
+// errLineRe matches the ffmpeg stderr lines that actually say what went
+// wrong — as opposed to progress lines ("frame= ... fps=...") and the
+// "Input #0, ..." header.
+var errLineRe = regexp.MustCompile(`(?i)error|invalid|not divisible|could not|failed|no such|unsupported`)
+
+// extractErrorLines picks the meaningful lines out of ffmpeg stderr:
+// every error-like line plus the last 10 lines, capped at ~1500 chars,
+// so the user sees "width not divisible by 2" instead of a useless
+// "Input #0, ..." first line or a bare "Conversion failed!".
+func extractErrorLines(stderr string) string {
+	var lines []string
+	for _, ln := range strings.Split(stderr, "\n") {
+		if ln = strings.TrimSpace(ln); ln != "" {
+			lines = append(lines, ln)
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	seen := map[string]bool{}
+	var kept []string
+	add := func(ln string) {
+		if !seen[ln] {
+			seen[ln] = true
+			kept = append(kept, ln)
+		}
+	}
+	for _, ln := range lines {
+		if errLineRe.MatchString(ln) {
+			add(ln)
+		}
+	}
+	start := len(lines) - 10
+	if start < 0 {
+		start = 0
+	}
+	for _, ln := range lines[start:] {
+		// The tail is context, not noise: skip pure progress lines
+		// ("frame= ... fps=..."), the "Input #0, ..." header and the
+		// version banner — they say nothing about the failure.
+		if strings.HasPrefix(ln, "frame=") || strings.HasPrefix(ln, "Input #") || strings.HasPrefix(ln, "ffmpeg version") {
+			continue
+		}
+		add(ln)
+	}
+	s := strings.Join(kept, " | ")
+	if len(s) > 1500 {
+		s = s[:1500]
+	}
+	return s
 }
 
 // probeVideo returns duration/size/fps/codec/format via ffprobe,
@@ -422,11 +492,49 @@ func firstLine(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// clampRegion clamps a box to the frame bounds. Returns false when the
+// box ends up empty (fully outside the frame, or smaller than 2x2) —
+// callers drop such regions instead of failing the whole export.
+func clampRegion(r Region, frameW, frameH int) (Region, bool) {
+	if frameW > 0 && frameH > 0 {
+		if r.X < 0 {
+			r.X = 0
+		}
+		if r.Y < 0 {
+			r.Y = 0
+		}
+		if r.X > frameW-2 || r.Y > frameH-2 {
+			return r, false
+		}
+		if r.X+r.W > frameW {
+			r.W = frameW - r.X
+		}
+		if r.Y+r.H > frameH {
+			r.H = frameH - r.Y
+		}
+	}
+	if r.W < 2 || r.H < 2 {
+		return r, false
+	}
+	return r, true
+}
+
 // buildFilterComplex builds the ffmpeg filter_complex string for the given
 // enabled regions. Pattern: split base into N+1, crop+boxblur each region,
-// overlay them back in order with between(t,start,end).
-func buildFilterComplex(regions []Region, blurStrength int) string {
+// overlay them back in order with between(t,start,end), then force the
+// output to even dimensions with format=yuv420p — libx264 (and NVENC)
+// reject odd widths/heights with error -22 ("width not divisible by 2"),
+// and cropped/window recordings are often odd-sized (e.g. 1279x719).
+// The final scale is a no-op when the frame is already even.
+func buildFilterComplex(regions []Region, blurStrength int, frameW, frameH int) string {
 	enabled := enabledRegions(regions)
+	var clamped []Region
+	for _, r := range enabled {
+		if c, ok := clampRegion(r, frameW, frameH); ok {
+			clamped = append(clamped, c)
+		}
+	}
+	enabled = clamped
 	if len(enabled) == 0 {
 		return ""
 	}
@@ -446,16 +554,14 @@ func buildFilterComplex(regions []Region, blurStrength int) string {
 	}
 	cur := "s0"
 	for i, r := range enabled {
-		// Last overlay outputs straight to [vout]; earlier ones chain via [oN].
+		// Overlays chain via [oN]; the last one feeds the even-dim scale.
 		next := fmt.Sprintf("o%d", i)
-		if i == len(enabled)-1 {
-			next = "vout"
-		}
 		fmt.Fprintf(&b, "[%s][b%d]overlay=%d:%d:enable='between(t,%.2f,%.2f)'[%s];",
 			cur, i, r.X, r.Y, r.Start, r.End, next)
 		cur = next
 	}
-	return strings.TrimSuffix(b.String(), ";")
+	fmt.Fprintf(&b, "[%s]scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p[vout]", cur)
+	return b.String()
 }
 
 func enabledRegions(regions []Region) []Region {
@@ -470,22 +576,23 @@ func enabledRegions(regions []Region) []Region {
 
 // exportVideo runs ffmpeg with the blur filter, calling onProgress(0-1)
 // as it parses time= from stderr. Streams the file; never loads it in RAM.
-// If h264_nvenc is listed but unusable (no NVIDIA GPU), it falls back
-// to libx264 automatically.
+// Fallbacks, in order: h264_nvenc (if listed) → libx264 with audio copy
+// → libx264 with audio re-encoded to AAC (mkv audio like Vorbis/Opus/PCM
+// cannot be copied into mp4, so a copy-only export would fail outright).
 func exportVideo(tools Tools, input, output string, regions []Region, blurStrength int, onProgress func(float64)) error {
-	fc := buildFilterComplex(regions, blurStrength)
-	if fc == "" {
-		return fmt.Errorf("no enabled blur regions")
-	}
 	info, err := probeVideo(tools, input)
 	if err != nil {
 		return err
 	}
-	run := func(encArgs []string) error {
+	fc := buildFilterComplex(regions, blurStrength, info.Width, info.Height)
+	if fc == "" {
+		return fmt.Errorf("no enabled blur regions")
+	}
+	run := func(encArgs []string, audio string) error {
 		args := []string{"-hide_banner", "-y", "-i", input,
 			"-filter_complex", fc, "-map", "[vout]", "-map", "0:a?"}
 		args = append(args, encArgs...)
-		args = append(args, "-c:a", "copy", "-movflags", "+faststart", output)
+		args = append(args, "-c:a", audio, "-movflags", "+faststart", output)
 		cmd := exec.Command(tools.FFmpeg, args...)
 		stderr, err := cmd.StderrPipe()
 		if err != nil {
@@ -497,12 +604,18 @@ func exportVideo(tools Tools, input, output string, regions []Region, blurStreng
 		reTime := regexp.MustCompile(`time=(\d+):(\d+):([\d.]+)`)
 		sc := bufio.NewScanner(stderr)
 		sc.Buffer(make([]byte, 64*1024), 1024*1024)
-		var lastLines []string
+		var errLines, tail []string
 		for sc.Scan() {
 			line := sc.Text()
-			lastLines = append(lastLines, line)
-			if len(lastLines) > 5 {
-				lastLines = lastLines[1:]
+			trimmed := strings.TrimSpace(line)
+			if trimmed != "" {
+				if errLineRe.MatchString(trimmed) {
+					errLines = append(errLines, trimmed)
+				}
+				tail = append(tail, trimmed)
+				if len(tail) > 10 {
+					tail = tail[1:]
+				}
 			}
 			if m := reTime.FindStringSubmatch(line); m != nil && info.Duration > 0 {
 				h, _ := strconv.ParseFloat(m[1], 64)
@@ -518,12 +631,14 @@ func exportVideo(tools Tools, input, output string, regions []Region, blurStreng
 			}
 		}
 		if err := cmd.Wait(); err != nil {
-			return fmt.Errorf("ffmpeg export failed: %w: %s", err, strings.Join(lastLines, " | "))
+			detail := extractErrorLines(strings.Join(append(append([]string{}, errLines...), tail...), "\n"))
+			return fmt.Errorf("ffmpeg export failed: %w: %s", err, detail)
 		}
 		return nil
 	}
+	x264 := []string{"-c:v", "libx264", "-crf", "18", "-preset", "veryfast"}
 	if tools.HasNVENC {
-		if err := run([]string{"-c:v", "h264_nvenc", "-cq", "23"}); err == nil {
+		if err := run([]string{"-c:v", "h264_nvenc", "-cq", "23"}, "copy"); err == nil {
 			return nil
 		} else {
 			// NVENC listed but no usable GPU — fall through to libx264.
@@ -532,7 +647,16 @@ func exportVideo(tools Tools, input, output string, regions []Region, blurStreng
 			}
 		}
 	}
-	return run([]string{"-c:v", "libx264", "-crf", "18", "-preset", "veryfast"})
+	if err := run(x264, "copy"); err == nil {
+		return nil
+	} else {
+		if onProgress != nil {
+			onProgress(0)
+		}
+	}
+	// Audio copy failed (e.g. Vorbis/Opus in an .mkv cannot go into mp4)
+	// — retry the same encode with the audio re-encoded to AAC.
+	return run(x264, "aac")
 }
 
 // parseProgressTime parses "HH:MM:SS.xx" from ffmpeg stderr into seconds.
