@@ -80,6 +80,15 @@ is just remuxed, no quality loss; anything else is re-encoded at
 most 1280 wide). The preview is only for watching — scanning and
 export always use your original file.
 
+**Odd-size videos work too.** Cropped or window recordings often have
+odd dimensions (e.g. 1279x719), which libx264 rejects ("width not
+divisible by 2"). Export now forces the output to even dimensions
+(shrinking by at most 1px) and clamps every blur box to the frame, so
+those videos export instead of failing. If an export still fails, the
+error message now shows ffmpeg's real reason instead of a generic
+"Conversion failed!". The version (e.g. v0.2.2) is shown in the header
+so you can check which build you are running.
+
 ## Build from source
 
 ```
@@ -121,8 +130,11 @@ which patterns to detect) live in the web UI and in
    merged across frames into time ranges.
 4. Export builds one ffmpeg `filter_complex` chain:
    `split → crop + boxblur → overlay` per region, with
-   `enable='between(t,start,end)'`, and re-encodes with
-   libx264 (or h264_nvenc when available) at CRF 18.
+   `enable='between(t,start,end)'`, then a final
+   `scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p` so odd-sized
+   videos (e.g. 1279x719) still encode, and re-encodes with
+   libx264 (or h264_nvenc when available) at CRF 18. Audio is copied
+   when the container allows it, otherwise re-encoded to AAC.
 
 Auto-detection is never 100% — always review the preview before
 exporting, especially for small or fast-moving text.
