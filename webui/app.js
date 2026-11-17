@@ -1,0 +1,174 @@
+// BlurCut web UI — no CDN, no external requests. All fetch() is local.
+const $ = s => document.querySelector(s);
+let currentJob = null, pollTimer = null;
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) { const t = await r.text(); throw new Error(t || r.statusText); }
+  return r.json();
+}
+const fmtTime = s => { s = Math.max(0, s); const m = Math.floor(s / 60), sec = Math.floor(s % 60); return m + ':' + String(sec).padStart(2, '0'); };
+
+async function loadStatus() {
+  try {
+    const st = await api('/api/status');
+    const el = $('#status');
+    const ff = st.ffmpegOk ? 'ffmpeg ✓' : 'ffmpeg ✗';
+    const ts = st.tesseractOk ? 'tesseract ✓' : 'tesseract ✗ (manual boxes only)';
+    el.textContent = ff + ' · ' + ts + (st.hasNvenc ? ' · NVENC' : '');
+    el.className = 'status ' + (st.ffmpegOk ? 'ok' : 'bad');
+    if (!st.ffmpegOk) $('#uploadMsg').textContent = 'ffmpeg not found — download it from ffmpeg.org (Windows: gyan.dev/ffmpeg/builds), put ffmpeg.exe next to blurcut.exe and restart.';
+    if (!st.tesseractOk) $('#scanMsg').textContent = 'Auto-scan is off: tesseract not found. Install Tesseract (Windows: UB-Mannheim build on GitHub), restart, or draw manual boxes.';
+  } catch (e) { $('#status').textContent = 'status failed: ' + e.message; }
+}
+
+async function loadJobs() {
+  const jobs = await api('/api/jobs');
+  const ul = $('#jobList'); ul.innerHTML = '';
+  jobs.forEach(j => {
+    const li = document.createElement('li');
+    li.innerHTML = '<span>' + esc(j.name) + '</span><span>' + j.status + ' · ' + (j.regions ? j.regions.length : 0) + ' regions</span>';
+    li.onclick = () => selectJob(j.id);
+    ul.appendChild(li);
+  });
+}
+const esc = s => String(s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+async function selectJob(id) {
+  currentJob = await api('/api/jobs/' + id);
+  $('#previewCard').hidden = false;
+  $('#jobInfo').textContent = currentJob.name + ' — ' + currentJob.width + '×' + currentJob.height + ', ' + fmtTime(currentJob.duration) + ' (' + currentJob.status + ')';
+  const v = $('#video'); v.src = '/video/' + id;
+  renderRegions();
+  $('#downloadLink').hidden = !currentJob.hasExport;
+  if (currentJob.hasExport) $('#downloadLink').href = '/download/' + id;
+  startPoll();
+}
+
+function renderRegions() {
+  const ov = $('#overlay'); ov.querySelectorAll('.box').forEach(e => e.remove());
+  const tbody = document.querySelector('#regionTable tbody'); tbody.innerHTML = '';
+  if (!currentJob) return;
+  const v = $('#video');
+  (currentJob.regions || []).forEach(r => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td><input type="checkbox" ' + (r.enabled ? 'checked' : '') + ' data-id="' + r.id + '" class="toggle"></td>' +
+      '<td>' + esc(r.label) + '</td><td>' + fmtTime(r.start) + '–' + fmtTime(r.end) + '</td>' +
+      '<td title="' + esc(r.text) + '">' + esc(r.text || '') + '</td>' +
+      '<td><button data-id="' + r.id + '" class="del">✕</button></td>';
+    tbody.appendChild(tr);
+    // overlay box, shown only while the video is in its time range
+    const show = v.currentTime >= r.start && v.currentTime <= r.end;
+    if (show) {
+      const d = document.createElement('div');
+      d.className = 'box' + (r.enabled ? '' : ' disabled');
+      d.style.left = (r.rx * 100) + '%'; d.style.top = (r.ry * 100) + '%';
+      d.style.width = (r.rw * 100) + '%'; d.style.height = (r.rh * 100) + '%';
+      d.innerHTML = '<span class="tag">' + esc(r.label) + ' ' + fmtTime(r.start) + '–' + fmtTime(r.end) + '</span>';
+      d.onclick = () => { v.currentTime = r.start; };
+      ov.appendChild(d);
+    }
+  });
+  tbody.querySelectorAll('.toggle').forEach(cb => cb.onchange = async () => {
+    const r = currentJob.regions.find(x => x.id === cb.dataset.id);
+    await api('/api/jobs/' + currentJob.id + '/regions/' + r.id, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: cb.checked }) });
+    r.enabled = cb.checked; renderRegions();
+  });
+  tbody.querySelectorAll('.del').forEach(b => b.onclick = async () => {
+    await api('/api/jobs/' + currentJob.id + '/regions/' + b.dataset.id, { method: 'DELETE' });
+    currentJob.regions = currentJob.regions.filter(x => x.id !== b.dataset.id); renderRegions();
+  });
+}
+
+function startPoll() {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    if (!currentJob) return;
+    const j = await api('/api/jobs/' + currentJob.id);
+    currentJob = j;
+    $('#progress').textContent = (j.status === 'scanning' || j.status === 'exporting') ? j.status + ' ' + Math.round(j.progress * 100) + '%' : (j.message || '');
+    if (j.status === 'scanned' || j.status === 'done' || j.status === 'error') { renderRegions(); $('#jobInfo').textContent = j.name + ' — ' + j.width + '×' + j.height + ', ' + fmtTime(j.duration) + ' (' + j.status + ': ' + (j.message || '') + ')'; }
+    if (j.hasExport) { $('#downloadLink').hidden = false; $('#downloadLink').href = '/download/' + j.id; }
+    if (j.status === 'done' || j.status === 'error' || j.status === 'scanned') loadJobs();
+  }, 1500);
+}
+
+// upload
+async function upload(file) {
+  $('#uploadMsg').textContent = 'Uploading ' + file.name + '…';
+  const fd = new FormData(); fd.append('video', file);
+  const r = await fetch('/api/jobs', { method: 'POST', body: fd });
+  if (!r.ok) { $('#uploadMsg').textContent = 'Upload failed: ' + await r.text(); return; }
+  const j = await r.json();
+  $('#uploadMsg').textContent = 'Uploaded. Now press Auto-scan, or draw a manual box.';
+  loadJobs(); selectJob(j.id);
+}
+$('#browseBtn').onclick = () => $('#fileInput').click();
+$('#fileInput').onchange = e => { if (e.target.files[0]) upload(e.target.files[0]); };
+const dz = $('#dropZone');
+['dragover', 'dragenter'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.add('dragover'); }));
+['dragleave', 'drop'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove('dragover'); }));
+dz.addEventListener('drop', e => { const f = e.dataTransfer.files[0]; if (f) upload(f); });
+
+// scan / export
+$('#scanBtn').onclick = async () => {
+  if (!currentJob) return;
+  try { await api('/api/jobs/' + currentJob.id + '/scan', { method: 'POST' }); $('#scanMsg').textContent = 'Scanning… this takes a while for long videos.'; }
+  catch (e) { $('#scanMsg').textContent = 'Scan failed: ' + e.message; }
+};
+$('#exportBtn').onclick = async () => {
+  if (!currentJob) return;
+  try { await api('/api/jobs/' + currentJob.id + '/export', { method: 'POST' }); $('#progress').textContent = 'Exporting…'; }
+  catch (e) { $('#progress').textContent = 'Export failed: ' + e.message; }
+};
+
+// draw a manual box on the video
+(function () {
+  const wrap = $('#videoWrap'), v = $('#video'), ov = $('#overlay');
+  let start = null, box = null;
+  ov.addEventListener('mousedown', e => {
+    if (e.target !== ov) return;
+    const r = ov.getBoundingClientRect();
+    start = { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+    box = document.createElement('div'); box.id = 'drawBox'; ov.appendChild(box);
+  });
+  ov.addEventListener('mousemove', e => {
+    if (!start || !box) return;
+    const r = ov.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+    box.style.left = Math.min(start.x, x) * 100 + '%'; box.style.top = Math.min(start.y, y) * 100 + '%';
+    box.style.width = Math.abs(x - start.x) * 100 + '%'; box.style.height = Math.abs(y - start.y) * 100 + '%';
+  });
+  ov.addEventListener('mouseup', async e => {
+    if (!start || !box || !currentJob) { start = null; if (box) box.remove(); box = null; return; }
+    const r = ov.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+    const rx = Math.min(start.x, x), ry = Math.min(start.y, y), rw = Math.abs(x - start.x), rh = Math.abs(y - start.y);
+    box.remove(); box = null; start = null;
+    if (rw < 0.01 || rh < 0.01) return;
+    const t = v.currentTime;
+    const reg = await api('/api/jobs/' + currentJob.id + '/regions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rx, ry, rw, rh, start: t, end: t + 5 }) });
+    currentJob.regions.push(reg); renderRegions();
+  });
+  v.addEventListener('timeupdate', renderRegions);
+})();
+
+// settings
+$('#settingsBtn').onclick = () => { $('#settingsCard').hidden = !$('#settingsCard').hidden; loadSettings(); };
+async function loadSettings() {
+  const c = await api('/api/settings');
+  $('#setInterval').value = String(c.scanInterval); $('#setBlur').value = c.blurStrength; $('#blurVal').textContent = c.blurStrength;
+  $('#patUrl').checked = !!c.patterns.url; $('#patEmail').checked = !!c.patterns.email;
+  $('#patPassword').checked = !!c.patterns.password; $('#patApikey').checked = !!c.patterns.apikey;
+  $('#setKeywords').value = (c.keywords || []).join('\n');
+}
+$('#setBlur').oninput = e => $('#blurVal').textContent = e.target.value;
+$('#saveSettings').onclick = async () => {
+  const cfg = { port: 8080, scanInterval: parseFloat($('#setInterval').value), blurStrength: parseInt($('#setBlur').value, 10),
+    keywords: $('#setKeywords').value.split('\n').map(s => s.trim()).filter(Boolean),
+    patterns: { url: $('#patUrl').checked, email: $('#patEmail').checked, password: $('#patPassword').checked, apikey: $('#patApikey').checked } };
+  await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) });
+  $('#settingsMsg').textContent = 'Saved.';
+};
+
+loadStatus(); loadJobs();
