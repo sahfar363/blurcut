@@ -85,7 +85,7 @@ func TestMergeTimeRanges(t *testing.T) {
 
 func TestFilterComplexOneRegion(t *testing.T) {
 	regions := []Region{{X: 10, Y: 20, W: 200, H: 30, Start: 1, End: 5, Enabled: true}}
-	fc := buildFilterComplex(regions, 20)
+	fc := buildFilterComplex(regions, 20, 1280, 720)
 	if !strings.Contains(fc, "[0:v]split=2[s0][s1]") {
 		t.Errorf("missing split: %s", fc)
 	}
@@ -106,14 +106,14 @@ func TestFilterComplexTwoRegions(t *testing.T) {
 		{X: 50, Y: 50, W: 80, H: 20, Start: 3, End: 4, Enabled: true},
 		{X: 0, Y: 0, W: 10, H: 10, Start: 0, End: 1, Enabled: false}, // disabled: skipped
 	}
-	fc := buildFilterComplex(regions, 15)
+	fc := buildFilterComplex(regions, 15, 1280, 720)
 	if !strings.Contains(fc, "split=3") {
 		t.Errorf("want split=3 (2 enabled + base), got: %s", fc)
 	}
 	if strings.Count(fc, "overlay=") != 2 {
 		t.Errorf("want 2 overlays, got: %s", fc)
 	}
-	if buildFilterComplex(nil, 20) != "" {
+	if buildFilterComplex(nil, 20, 1280, 720) != "" {
 		t.Errorf("empty regions should give empty filter")
 	}
 }
