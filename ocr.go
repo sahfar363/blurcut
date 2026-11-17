@@ -40,8 +40,17 @@ func parseTSV(tsv string) []OCRWord {
 }
 
 // runTesseract runs tesseract on one image file and returns OCR words.
-func runTesseract(tesseractPath, imagePath string) ([]OCRWord, error) {
-	cmd := exec.Command(tesseractPath, imagePath, "stdout", "tsv")
+// tessData is the tessdata dir itself, used as TESSDATA_PREFIX
+// ("" = tesseract's default). TSV output is requested with
+// -c tessedit_create_tsv=1 instead of the "tsv" config file, because a
+// bundled/minimal tessdata folder has no config files — with the plain
+// "tsv" argument tesseract silently falls back to plain text and every
+// word is lost.
+func runTesseract(tesseractPath, tessData, imagePath string) ([]OCRWord, error) {
+	cmd := exec.Command(tesseractPath, imagePath, "stdout", "-c", "tessedit_create_tsv=1")
+	if tessData != "" {
+		cmd.Env = append(os.Environ(), "TESSDATA_PREFIX="+tessData)
+	}
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("tesseract: %w", err)
@@ -51,15 +60,16 @@ func runTesseract(tesseractPath, imagePath string) ([]OCRWord, error) {
 
 // scanVideo extracts frames every interval seconds, OCRs each, and returns
 // merged detections. Frames are streamed to a temp dir, never held in RAM.
-func scanVideo(ffmpegPath, tesseractPath, videoPath string, interval float64, keywords []string, patterns map[string]bool, probe VideoInfo) ([]Detection, error) {
+func scanVideo(tools Tools, videoPath string, interval float64, keywords []string, patterns map[string]bool, probe VideoInfo) ([]Detection, error) {
 	tmp, err := os.MkdirTemp("", "blurcut-scan-*")
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(tmp)
 
+	// fps=1/interval, e.g. interval 1.0 -> 1 fps.
 	fps := fmt.Sprintf("fps=1/%.3f", interval)
-	cmd := exec.Command(ffmpegPath, "-hide_banner", "-loglevel", "error",
+	cmd := exec.Command(tools.FFmpeg, "-hide_banner", "-loglevel", "error",
 		"-i", videoPath, "-vf", fps, "-q:v", "4",
 		filepath.Join(tmp, "frame_%04d.jpg"))
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -72,11 +82,15 @@ func scanVideo(ffmpegPath, tesseractPath, videoPath string, interval float64, ke
 	sort.Strings(frames)
 
 	var raw []Detection
+	ocrErrs, lastErr := 0, error(nil)
 	for i, frame := range frames {
+		// Frame 1 is at t=0, frame n at t=(n-1)*interval.
 		t := float64(i) * interval
-		words, err := runTesseract(tesseractPath, frame)
+		words, err := runTesseract(tools.Tesseract, tools.TessData, frame)
 		if err != nil {
-			continue
+			ocrErrs++
+			lastErr = err
+			continue // one bad frame must not kill the whole scan
 		}
 		if len(words) == 0 {
 			continue
@@ -104,6 +118,11 @@ func scanVideo(ffmpegPath, tesseractPath, videoPath string, interval float64, ke
 	merged := mergeTimeRanges(raw)
 	for i := range merged {
 		merged[i].ID = fmt.Sprintf("det-%d", i+1)
+	}
+	// If OCR failed on every frame, say so — "0 regions found" would be a
+	// lie (e.g. tesseract cannot load its language data).
+	if len(frames) > 0 && ocrErrs == len(frames) {
+		return nil, fmt.Errorf("tesseract failed on all %d frames (tessdata=%q): %v", len(frames), tools.TessData, lastErr)
 	}
 	return merged, nil
 }
