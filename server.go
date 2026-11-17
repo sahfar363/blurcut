@@ -485,17 +485,57 @@ func (s *server) handleExport(w http.ResponseWriter, r *http.Request, j *Job) {
 	}
 	s.store.SetStatus(j, "exporting", "Blurring and re-encoding…", 0)
 	go func() {
-		err := exportVideo(tools, j.VideoPath, j.ExportPath, j.Regions, s.cfg.BlurStrength, func(p float64) {
+		enc, err := exportVideo(tools, j.VideoPath, j.ExportPath, j.Regions, s.cfg.BlurStrength, func(p float64) {
 			s.store.SetStatus(j, "exporting", "Blurring and re-encoding…", p)
 		})
 		if err != nil {
 			s.store.SetStatus(j, "error", "Export failed: "+err.Error(), 0)
 			return
 		}
+		// ffmpeg exited 0 — but that alone does not prove the file is
+		// good. Verify it before offering the download, so a missing,
+		// empty or broken output is an error with a reason, never a
+		// silent "done" with nothing to download.
+		if err := verifyExport(tools, j.ExportPath); err != nil {
+			_ = os.Remove(j.ExportPath)
+			j.HasExport = false
+			s.store.SetStatus(j, "error", "Export produced an invalid file ("+err.Error()+") — please try again and send the error text", 0)
+			return
+		}
+		var size int64
+		if st, err := os.Stat(j.ExportPath); err == nil {
+			size = st.Size()
+		}
 		j.HasExport = true
-		s.store.SetStatus(j, "done", "Export ready", 1)
+		s.store.SetStatus(j, "done", fmt.Sprintf("Export ready — %s (%s)", humanSize(size), enc), 1)
 	}()
 	writeJSON(w, 202, map[string]bool{"ok": true})
+}
+
+// humanSize renders a byte count for the export-done message.
+func humanSize(n int64) string {
+	switch {
+	case n < 1024:
+		return fmt.Sprintf("%d B", n)
+	case n < 1024*1024:
+		return fmt.Sprintf("%.1f KB", float64(n)/1024)
+	default:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1024*1024))
+	}
+}
+
+// exportDownloadName turns the original upload name into the download
+// name for the blurred video. The export is always an mp4, so the name
+// must always end in .mp4 — serving an mp4 as "blurred-clip.mkv" makes
+// players (VLC, Windows Media Player) pick the wrong demuxer from the
+// extension and refuse to open a perfectly valid file.
+func exportDownloadName(jobName string) string {
+	base := strings.TrimSuffix(filepath.Base(jobName), filepath.Ext(jobName))
+	base = strings.Trim(base, ".")
+	if base == "" {
+		base = "video"
+	}
+	return "blurred-" + base + ".mp4"
 }
 
 func (s *server) handleVideo(w http.ResponseWriter, r *http.Request) {
@@ -540,6 +580,11 @@ func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 	st, _ := f.Stat()
-	w.Header().Set("Content-Disposition", `attachment; filename="blurred-`+j.Name+`"`)
-	http.ServeContent(w, r, "blurred-"+j.Name, st.ModTime(), f)
+	name := exportDownloadName(j.Name)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	// Set explicitly as well as via the .mp4 name: the export is an
+	// mp4 whatever the original file was, and the Content-Type must
+	// say so, or players pick the wrong demuxer.
+	w.Header().Set("Content-Type", "video/mp4")
+	http.ServeContent(w, r, name, st.ModTime(), f)
 }
