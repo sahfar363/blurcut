@@ -52,13 +52,15 @@
     <p id="previewNote" class="hint" hidden>Preview converted so it plays here — your original file is used for scanning and export.</p>
     <p id="videoError" class="hint" hidden></p>
     <button id="reloadPreviewBtn" class="ghost" hidden>↻ Reload preview</button>
-    <p class="hint">Drag on the video to draw a manual box. It starts at the current time and lasts 5s — edit it below.</p>
+    <p class="hint">Press play to watch the video. To draw a manual box, turn on drawing below — it starts at the current time and lasts 5s.</p>
     <div class="row">
+      <button id="drawToggleBtn">✏️ Draw a box</button>
       <button id="scanBtn">🔍 Auto-scan</button>
       <button id="exportBtn" class="primary">⬇ Export blurred video</button>
       <span id="progress"></span>
       <a id="downloadLink" hidden>Download blurred video</a>
     </div>
+    <p id="drawHint" class="hint" hidden>Drawing mode on — drag on the video to draw a box. Turn it off to play the video.</p>
     <div id="scanMsg"></div>
     <h3>Regions to blur</h3>
     <table id="regionTable"><thead><tr><th>✓</th><th>Label</th><th>Time</th><th>Text</th><th></th></tr></thead><tbody></tbody></table>
