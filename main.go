@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-const version = "0.2.3"
+const version = "0.2.4"
 
 func now() time.Time { return time.Now() }
 
@@ -231,11 +231,12 @@ func runBlurCLI(args []string) error {
 			relativeToPixel(&regions[i], info.Width, info.Height)
 		}
 	}
-	if err := exportVideo(tools, video, *out, regions, cfg.BlurStrength, func(p float64) {
+	enc, err := exportVideo(tools, video, *out, regions, cfg.BlurStrength, func(p float64) {
 		fmt.Printf("\rExport %.0f%%", p*100)
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
-	fmt.Printf("\nWrote %s\n", filepath.Clean(*out))
+	fmt.Printf("\nWrote %s (%s)\n", filepath.Clean(*out), enc)
 	return nil
 }
