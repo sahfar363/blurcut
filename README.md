@@ -19,31 +19,32 @@ DaVinci.
   loading the whole file into RAM.
 - **Light** — one static Go binary, no database server.
 
-## Install (Windows — recommended)
+## Install (Windows — one zip, everything included)
 
 1. Download the latest release zip from
    [Releases](https://github.com/sahfar363/blurcut/releases)
-   — it contains `blurcut.exe`.
-2. Download ffmpeg for Windows from
-   [gyan.dev/ffmpeg/builds](https://www.gyan.dev/ffmpeg/builds/)
-   (release essentials zip) and copy `ffmpeg.exe` into the same folder
-   as `blurcut.exe`.
-3. For auto-scan, also install Tesseract OCR from
-   [UB-Mannheim/tesseract](https://github.com/UB-Mannheim/tesseract/wiki)
-   and make sure `tesseract.exe` is on PATH. Without it, auto-scan is
-   disabled but manual boxes still work.
-4. Double-click `blurcut.exe`. It prints a link — open it in your browser:
-
-```
-http://localhost:8080
-```
+   — it contains `blurcut.exe` plus everything it needs in `tools/`:
+   `ffmpeg.exe`, `tesseract.exe` (+ its DLLs) and
+   `tessdata/eng.traineddata`.
+2. Unzip it to a folder, e.g. `C:\blurcut`. Keep the `tools/` folder
+   next to `blurcut.exe`.
+3. Double-click `blurcut.exe`. It opens its own BlurCut window — no
+   browser, no URL to type. (If the WebView2 runtime is missing it
+   opens Edge in app mode instead, then your default browser.)
 
 Then: upload a video → **Auto-scan** → review the regions on the
 preview (draw extra boxes if needed) → **Export blurred video** →
 download the result.
 
-> If ffmpeg is missing, BlurCut tells you so in the UI and on the
-> console instead of crashing. Same for tesseract.
+> The Tools card at the top of the window shows green ✓ ticks for
+> ffmpeg and tesseract with the exact path found. If one is ever red,
+> use the Download buttons there, or paste a path manually. BlurCut
+> looks for tools next to `blurcut.exe`, in `tools/`, and on PATH —
+> in that order — so a `ffmpeg.exe` you drop in yourself just works.
+
+Prefer the browser instead? Run `blurcut.exe serve` — it opens
+`http://localhost:8080` for you. `blurcut.exe serve --no-browser`
+starts the server without opening anything.
 
 ## Install (Linux)
 
@@ -54,6 +55,23 @@ Download `blurcut-linux-amd64` from Releases, plus `ffmpeg` and
 sudo apt install ffmpeg tesseract-ocr
 ./blurcut-linux-amd64 serve --port 8080
 ```
+
+## Tools (ffmpeg / tesseract)
+
+BlurCut finds its tools in this order: paths saved in settings,
+`BLURCUT_FFMPEG` / `BLURCUT_FFPROBE` / `BLURCUT_TESSERACT` env vars,
+the folder next to `blurcut.exe`, `tools/` (and `bin/`) there, the
+current folder, PATH, and — on Windows — the usual install locations
+(`C:\Program Files\Tesseract-OCR`, `C:\ffmpeg\bin`, ...). If tesseract
+is found, its `tessdata` folder is picked up automatically. The Tools
+card in the UI shows what was found and where it looked; missing tools
+can be downloaded from there (ffmpeg) or via the official installer
+(tesseract).
+
+The Windows zip bundles ffmpeg (GPLv3 — see
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)) and Tesseract
+(Apache 2.0). `ffprobe.exe` is optional: BlurCut uses `ffmpeg -i`
+when ffprobe is absent, so it is not bundled — the zip stays smaller.
 
 ## Build from source
 
