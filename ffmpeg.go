@@ -5,24 +5,204 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 )
 
 type Tools struct {
-	FFmpeg    string `json:"ffmpeg"`
-	FFprobe   string `json:"ffprobe"`
-	Tesseract string `json:"tesseract"`
-	HasNVENC  bool   `json:"hasNvenc"`
+	FFmpeg    string              `json:"ffmpeg"`
+	FFprobe   string              `json:"ffprobe"`
+	Tesseract string              `json:"tesseract"`
+	TessData  string              `json:"tessdata,omitempty"`
+	HasNVENC  bool                `json:"hasNvenc"`
+	Searched  map[string][]string `json:"searched,omitempty"`
 }
 
-func detectTools() Tools {
-	t := Tools{}
-	t.FFmpeg, _ = exec.LookPath("ffmpeg")
-	t.FFprobe, _ = exec.LookPath("ffprobe")
-	t.Tesseract, _ = exec.LookPath("tesseract")
+func (t Tools) FFmpegOK() bool    { return t.FFmpeg != "" }
+func (t Tools) TesseractOK() bool { return t.Tesseract != "" }
+
+// exeDir returns the folder blurcut.exe / blurcut lives in.
+func exeDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return filepath.Dir(exe)
+}
+
+// toolFileNames returns the filenames to look for: plain name and .exe.
+func toolFileNames(name string) []string {
+	if strings.HasSuffix(name, ".exe") {
+		return []string{name}
+	}
+	return []string{name, name + ".exe"}
+}
+
+func fileExists(p string) bool {
+	if p == "" {
+		return false
+	}
+	fi, err := os.Stat(p)
+	return err == nil && !fi.IsDir()
+}
+
+// candidateDirs returns the folders searched for a tool, in priority order
+// (after a config path and env var, which are handled by the caller).
+func candidateDirs(exeDir, cwd string) []string {
+	dirs := []string{}
+	seen := map[string]bool{}
+	add := func(d string) {
+		if d == "" || seen[d] {
+			return
+		}
+		seen[d] = true
+		dirs = append(dirs, d)
+	}
+	add(exeDir)
+	add(filepath.Join(exeDir, "tools"))
+	add(filepath.Join(exeDir, "bin"))
+	add(cwd)
+	add(filepath.Join(cwd, "tools"))
+	if runtime.GOOS == "windows" {
+		add(`C:\ffmpeg\bin`)
+		add(`C:\Program Files\ffmpeg\bin`)
+		add(`C:\Program Files\Tesseract-OCR`)
+		add(`C:\Program Files (x86)\Tesseract-OCR`)
+		if la := os.Getenv("LOCALAPPDATA"); la != "" {
+			add(filepath.Join(la, "Tesseract-OCR"))
+		}
+	}
+	return dirs
+}
+
+// findToolFile returns the first existing file among candidates, or "".
+func findToolFile(candidates []string) string {
+	for _, c := range candidates {
+		if fileExists(c) {
+			return c
+		}
+	}
+	return ""
+}
+
+// resolveTool resolves one tool, recording every place it looked.
+// Order: config path, env var, exe folder (+ tools/, bin/), cwd (+ tools/),
+// PATH, then Windows common install folders.
+func resolveTool(name, cfgPath, envVar, exeDir, cwd string, lookPath func(string) (string, error)) (string, []string) {
+	var searched []string
+	note := func(p string) {
+		if p != "" {
+			searched = append(searched, p)
+		}
+	}
+	// (a) config-saved path
+	if cfgPath != "" {
+		note(cfgPath)
+		if fileExists(cfgPath) {
+			return cfgPath, searched
+		}
+	}
+	// (b) env var
+	if envVar != "" {
+		if v := os.Getenv(envVar); v != "" {
+			note(v)
+			if fileExists(v) {
+				return v, searched
+			}
+		}
+	}
+	// (c)-(d) exe folder, tools/, bin/, cwd, tools/
+	for _, dir := range candidateDirs(exeDir, cwd) {
+		for _, fn := range toolFileNames(name) {
+			p := filepath.Join(dir, fn)
+			note(p)
+			if fileExists(p) {
+				return p, searched
+			}
+		}
+	}
+	// (e) PATH
+	if lookPath != nil {
+		if p, err := lookPath(name); err == nil && p != "" {
+			note("PATH: " + p)
+			return p, searched
+		}
+		note("PATH: " + name + " (not found)")
+	}
+	return "", searched
+}
+
+// findTessData locates a tessdata folder containing eng.traineddata next to
+// the tesseract binary or the exe. Returns the tessdata dir itself —
+// tesseract wants TESSDATA_PREFIX pointing AT tessdata, not its parent.
+func findTessData(tesseractPath, exeDir string) string {
+	dirs := []string{}
+	if tesseractPath != "" {
+		d := filepath.Dir(tesseractPath)
+		dirs = append(dirs, d, filepath.Join(d, "tessdata"))
+	}
+	dirs = append(dirs, exeDir, filepath.Join(exeDir, "tessdata"),
+		filepath.Join(exeDir, "tools"), filepath.Join(exeDir, "tools", "tessdata"))
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		// d may itself be the tessdata dir, or its parent.
+		for _, cand := range []string{d, filepath.Join(d, "tessdata")} {
+			if fileExists(filepath.Join(cand, "eng.traineddata")) {
+				return cand
+			}
+		}
+	}
+	return ""
+}
+
+// detectToolsFrom is detectTools with injectable exe dir / cwd / PATH lookup,
+// so tests can use temp dirs without touching the real system.
+func detectToolsFrom(cfg Config, exeDir, cwd string, lookPath func(string) (string, error)) Tools {
+	t := Tools{Searched: map[string][]string{}}
+	var searched []string
+	t.FFmpeg, searched = resolveTool("ffmpeg", cfg.FfmpegPath, "BLURCUT_FFMPEG", exeDir, cwd, lookPath)
+	t.Searched["ffmpeg"] = searched
+	// ffprobe: prefer the folder ffmpeg was found in (gyan bin/ ships both).
+	ffprobeSearched := []string{}
+	if t.FFmpeg != "" {
+		p := filepath.Join(filepath.Dir(t.FFmpeg), "ffprobe.exe")
+		ffprobeSearched = append(ffprobeSearched, p)
+		if fileExists(p) {
+			t.FFprobe = p
+		} else {
+			p2 := filepath.Join(filepath.Dir(t.FFmpeg), "ffprobe")
+			ffprobeSearched = append(ffprobeSearched, p2)
+			if fileExists(p2) {
+				t.FFprobe = p2
+			}
+		}
+	}
+	if t.FFprobe == "" {
+		var s []string
+		t.FFprobe, s = resolveTool("ffprobe", cfg.FfprobePath, "BLURCUT_FFPROBE", exeDir, cwd, lookPath)
+		ffprobeSearched = append(ffprobeSearched, s...)
+	}
+	t.Searched["ffprobe"] = ffprobeSearched
+	t.Tesseract, searched = resolveTool("tesseract", cfg.TesseractPath, "BLURCUT_TESSERACT", exeDir, cwd, lookPath)
+	t.Searched["tesseract"] = searched
+	// TESSDATA_PREFIX: env wins, else discover next to the binary / exe.
+	// It must point AT the tessdata dir itself.
+	if v := os.Getenv("TESSDATA_PREFIX"); v != "" {
+		if fileExists(filepath.Join(v, "eng.traineddata")) {
+			t.TessData = v
+		} else if fileExists(filepath.Join(v, "tessdata", "eng.traineddata")) {
+			t.TessData = filepath.Join(v, "tessdata")
+		}
+	} else {
+		t.TessData = findTessData(t.Tesseract, exeDir)
+	}
 	if t.FFmpeg != "" {
 		out, err := exec.Command(t.FFmpeg, "-hide_banner", "-encoders").Output()
 		if err == nil {
@@ -32,8 +212,26 @@ func detectTools() Tools {
 	return t
 }
 
-func (t Tools) FFmpegOK() bool    { return t.FFmpeg != "" }
-func (t Tools) TesseractOK() bool { return t.Tesseract != "" }
+func detectTools() Tools {
+	return detectToolsFrom(Config{}, exeDir(), mustCwd(), exec.LookPath)
+}
+
+func detectToolsWithConfig(cfg Config) Tools {
+	return detectToolsFrom(cfg, exeDir(), mustCwd(), exec.LookPath)
+}
+
+func mustCwd() string {
+	wd, _ := os.Getwd()
+	return wd
+}
+
+// searchedSummary lists, for one tool, the places that were checked.
+func (t Tools) searchedSummary(name string) string {
+	if t.Searched == nil {
+		return "PATH"
+	}
+	return strings.Join(t.Searched[name], ", ")
+}
 
 // VideoInfo from probing a file.
 type VideoInfo struct {
@@ -58,6 +256,9 @@ type ffprobeOut struct {
 // probeVideo returns duration/size/fps via ffprobe, falling back to ffmpeg -i.
 func probeVideo(tools Tools, path string) (VideoInfo, error) {
 	var info VideoInfo
+	if tools.FFmpeg == "" && tools.FFprobe == "" {
+		return info, fmt.Errorf("ffmpeg not found — searched: %s", tools.searchedSummary("ffmpeg"))
+	}
 	if tools.FFprobe != "" {
 		cmd := exec.Command(tools.FFprobe, "-v", "quiet", "-print_format", "json",
 			"-show_format", "-show_streams", path)
@@ -87,6 +288,10 @@ func probeVideo(tools Tools, path string) (VideoInfo, error) {
 			}
 		}
 	}
+	if tools.FFmpeg == "" {
+		return info, fmt.Errorf("ffmpeg not found — searched: %s", tools.searchedSummary("ffmpeg"))
+	}
+	// Fallback: parse `ffmpeg -i` stderr.
 	cmd := exec.Command(tools.FFmpeg, "-hide_banner", "-i", path)
 	out, _ := cmd.CombinedOutput()
 	s := string(out)
@@ -117,14 +322,15 @@ func firstLine(s string) string {
 }
 
 // buildFilterComplex builds the ffmpeg filter_complex string for the given
-// enabled regions: split base into N+1, crop+boxblur each region, overlay
-// them back in order with between(t,start,end).
+// enabled regions. Pattern: split base into N+1, crop+boxblur each region,
+// overlay them back in order with between(t,start,end).
 func buildFilterComplex(regions []Region, blurStrength int) string {
 	enabled := enabledRegions(regions)
 	if len(enabled) == 0 {
 		return ""
 	}
 	var b strings.Builder
+	// [0:v]split=N+1[s0][s1]...[sN]
 	b.WriteString("[0:v]split=")
 	b.WriteString(strconv.Itoa(len(enabled) + 1))
 	for i := 0; i <= len(enabled); i++ {
@@ -218,9 +424,11 @@ func exportVideo(tools Tools, input, output string, regions []Region, blurStreng
 	if tools.HasNVENC {
 		if err := run([]string{"-c:v", "h264_nvenc", "-cq", "23"}); err == nil {
 			return nil
-		}
-		if onProgress != nil {
-			onProgress(0)
+		} else {
+			// NVENC listed but no usable GPU — fall through to libx264.
+			if onProgress != nil {
+				onProgress(0)
+			}
 		}
 	}
 	return run([]string{"-c:v", "libx264", "-crf", "18", "-preset", "veryfast"})
