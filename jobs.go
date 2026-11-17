@@ -7,26 +7,29 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
 
 type Job struct {
-	ID         string      `json:"id"`
-	Name       string      `json:"name"`
-	VideoPath  string      `json:"-"`
-	ExportPath string      `json:"-"`
-	HasExport  bool        `json:"hasExport"`
-	Duration   float64     `json:"duration"`
-	Width      int         `json:"width"`
-	Height     int         `json:"height"`
-	FPS        float64     `json:"fps"`
-	Status     string      `json:"status"` // uploaded, scanning, scanned, exporting, done, error
-	Progress   float64     `json:"progress"`
-	Message    string      `json:"message"`
-	Detections []Detection `json:"detections"`
-	Regions    []Region    `json:"regions"`
-	CreatedAt  time.Time   `json:"createdAt"`
+	ID               string      `json:"id"`
+	Name             string      `json:"name"`
+	VideoPath        string      `json:"-"`
+	ExportPath       string      `json:"-"`
+	PreviewPath      string      `json:"-"`
+	HasExport        bool        `json:"hasExport"`
+	PreviewConverted bool        `json:"previewConverted"` // served file is a converted mp4 preview, not the original
+	Duration         float64     `json:"duration"`
+	Width            int         `json:"width"`
+	Height           int         `json:"height"`
+	FPS              float64     `json:"fps"`
+	Status           string      `json:"status"` // uploaded, scanning, scanned, exporting, done, error
+	Progress         float64     `json:"progress"`
+	Message          string      `json:"message"`
+	Detections       []Detection `json:"detections"`
+	Regions          []Region    `json:"regions"`
+	CreatedAt        time.Time   `json:"createdAt"`
 }
 
 type JobStore struct {
@@ -47,10 +50,31 @@ func openJobStore(dataDir string) (*JobStore, error) {
 		var list []*Job
 		if json.Unmarshal(b, &list) == nil {
 			for _, j := range list {
-				j.VideoPath = filepath.Join(dataDir, "uploads", j.ID+".mp4")
+				// A scan/export running when the app was closed never
+				// finishes — reset it instead of leaving it stuck.
+				if j.Status == "scanning" || j.Status == "exporting" {
+					j.Status = "uploaded"
+					j.Message = "Interrupted — please scan or export again."
+					j.Progress = 0
+				}
+				// Uploads keep their original extension (id.mkv, id.mov…),
+				// so find the real file instead of assuming .mp4.
+				j.VideoPath = ""
+				if matches, _ := filepath.Glob(filepath.Join(dataDir, "uploads", j.ID+".*")); len(matches) > 0 {
+					for _, m := range matches {
+						if !strings.HasSuffix(m, "_preview.mp4") {
+							j.VideoPath = m
+							break
+						}
+					}
+				}
 				j.ExportPath = filepath.Join(dataDir, "exports", j.ID+"_blurred.mp4")
+				j.PreviewPath = filepath.Join(dataDir, "uploads", j.ID+"_preview.mp4")
 				if _, err := os.Stat(j.ExportPath); err == nil {
 					j.HasExport = true
+				}
+				if _, err := os.Stat(j.PreviewPath); err == nil {
+					j.PreviewConverted = true
 				}
 				s.jobs[j.ID] = j
 			}
@@ -118,6 +142,7 @@ func (s *JobStore) Delete(id string) {
 	s.mu.Unlock()
 	if ok {
 		_ = os.Remove(j.VideoPath)
+		_ = os.Remove(j.PreviewPath)
 		_ = os.Remove(j.ExportPath)
 	}
 	s.save()
