@@ -15,6 +15,25 @@
 </header>
 
 <main>
+  <section class="card" id="toolsCard">
+    <h2>Tools — ffmpeg &amp; tesseract</h2>
+    <p>BlurCut looks for these next to blurcut.exe, in the tools/ folder, and on PATH. Green means found — if one is red, use the buttons below.</p>
+    <ul id="toolList"></ul>
+    <div class="row">
+      <button id="dlFfmpegBtn">⬇ Download ffmpeg</button>
+      <button id="dlTessBtn">⬇ Download Tesseract</button>
+      <button id="recheckBtn">↻ Re-check tools</button>
+    </div>
+    <div id="toolMsg"></div>
+    <details>
+      <summary>Set paths manually</summary>
+      <label>ffmpeg path <input type="text" id="toolFfmpeg" placeholder="C:\blurcut\tools\ffmpeg.exe"></label>
+      <label>tesseract path <input type="text" id="toolTesseract" placeholder="C:\Program Files\Tesseract-OCR\tesseract.exe"></label>
+      <button id="saveTools">Save tool paths</button>
+      <span id="toolSaveMsg"></span>
+    </details>
+  </section>
+
   <section class="card" id="dropZone">
     <h2>1 · Upload a video</h2>
     <p>Drag &amp; drop a video here, or <button id="browseBtn">browse…</button>
