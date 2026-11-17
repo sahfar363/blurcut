@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-const version = "0.2.1"
+const version = "0.2.2"
 
 func now() time.Time { return time.Now() }
 
@@ -176,10 +176,14 @@ func runScanCLI(args []string) error {
 	if err != nil {
 		return err
 	}
-	dets, err := scanVideo(tools, video, cfg.ScanInterval, cfg.Keywords, cfg.Patterns, info)
+	dets, err := scanVideo(tools, video, cfg.ScanInterval, cfg.Keywords, cfg.Patterns, info, func(done, total int) {
+		fmt.Printf("\rScan frame %d/%d", done, total)
+	})
 	if err != nil {
+		fmt.Println()
 		return err
 	}
+	fmt.Println()
 	b, _ := json.MarshalIndent(dets, "", "  ")
 	if err := os.WriteFile(*out, b, 0o644); err != nil {
 		return err
