@@ -374,7 +374,13 @@ func (s *server) handleScan(w http.ResponseWriter, r *http.Request, j *Job) {
 	s.store.SetStatus(j, "scanning", "Extracting frames and running OCR…", 0)
 	go func() {
 		info := VideoInfo{Duration: j.Duration, Width: j.Width, Height: j.Height, FPS: j.FPS}
-		dets, err := scanVideo(tools, j.VideoPath, s.cfg.ScanInterval, s.cfg.Keywords, s.cfg.Patterns, info)
+		dets, err := scanVideo(tools, j.VideoPath, s.cfg.ScanInterval, s.cfg.Keywords, s.cfg.Patterns, info, func(done, total int) {
+			p := 0.0
+			if total > 0 {
+				p = float64(done) / float64(total)
+			}
+			s.store.SetStatus(j, "scanning", fmt.Sprintf("Scanning… frame %d/%d (%d%%)", done, total, int(p*100+0.5)), p)
+		})
 		if err != nil {
 			s.store.SetStatus(j, "error", "Scan failed: "+err.Error(), 0)
 			return
