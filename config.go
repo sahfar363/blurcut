@@ -11,10 +11,10 @@ import (
 type Config struct {
 	Port         int             `json:"port"`
 	DataDir      string          `json:"dataDir"`
-	ScanInterval float64         `json:"scanInterval"`
-	BlurStrength int             `json:"blurStrength"`
-	Keywords     []string        `json:"keywords"`
-	Patterns     map[string]bool `json:"patterns"`
+	ScanInterval float64         `json:"scanInterval"` // seconds between scanned frames
+	BlurStrength int             `json:"blurStrength"` // boxblur radius 10-30
+	Keywords     []string        `json:"keywords"`     // custom case-insensitive substrings
+	Patterns     map[string]bool `json:"patterns"`     // url,email,password,apikey toggles
 }
 
 const defaultPort = 8080
@@ -88,3 +88,4 @@ func saveConfig(cfg Config) error {
 		return err
 	}
 	return os.WriteFile(configPath(cfg.DataDir), b, 0o644)
+}
