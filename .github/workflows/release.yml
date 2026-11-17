@@ -23,16 +23,19 @@ jobs:
           cache: true
 
       # The Windows zip is one download with everything in it:
-      # blurcut.exe + tools/ffmpeg.exe + tools/tesseract.exe (+ its DLLs)
-      # + tools/tessdata/eng.traineddata. No separate downloads needed.
+      # blurcut.exe + tools/ffmpeg.exe + tools/ffprobe.exe
+      # + tools/tesseract.exe (+ its DLLs) + tools/tessdata/eng.traineddata.
+      # No separate downloads needed.
       - name: Download Windows ffmpeg (pinned 8.1.2, SHA-256 checked)
         run: |
           curl -fsSL -o ffmpeg-win.zip "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip"
           echo "db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec  ffmpeg-win.zip" | sha256sum -c -
-          unzip -o -q ffmpeg-win.zip "ffmpeg-8.1.2-essentials_build/bin/ffmpeg.exe"
+          unzip -o -q ffmpeg-win.zip "ffmpeg-8.1.2-essentials_build/bin/ffmpeg.exe" "ffmpeg-8.1.2-essentials_build/bin/ffprobe.exe"
           mkdir -p win-bundle/tools
           cp ffmpeg-8.1.2-essentials_build/bin/ffmpeg.exe win-bundle/tools/
+          cp ffmpeg-8.1.2-essentials_build/bin/ffprobe.exe win-bundle/tools/
           test -f win-bundle/tools/ffmpeg.exe
+          test -f win-bundle/tools/ffprobe.exe
 
       - name: Download + extract Windows Tesseract (UB-Mannheim 5.5.3)
         run: |
