@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-const version = "0.2.2"
+const version = "0.2.3"
 
 func now() time.Time { return time.Now() }
 
