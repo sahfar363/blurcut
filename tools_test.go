@@ -150,7 +150,7 @@ func TestScanVideoTesseractFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	tools := Tools{FFmpeg: fakeFF, Tesseract: fakeTS, TessData: filepath.Join(dir, "tessdata")}
-	_, err := scanVideo(tools, "video.mp4", 1.0, nil, map[string]bool{"url": true}, VideoInfo{Width: 1280, Height: 720})
+	_, err := scanVideo(tools, "video.mp4", 1.0, nil, map[string]bool{"url": true}, VideoInfo{Width: 1280, Height: 720}, nil)
 	if err == nil || !strings.Contains(err.Error(), "tesseract failed on all") {
 		t.Errorf("expected tesseract-all-frames error, got %v", err)
 	}
