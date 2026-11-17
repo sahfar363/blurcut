@@ -239,21 +239,147 @@ type VideoInfo struct {
 	Width    int     `json:"width"`
 	Height   int     `json:"height"`
 	FPS      float64 `json:"fps"`
+	Codec    string  `json:"codec,omitempty"`  // e.g. h264, hevc, vp9
+	Format   string  `json:"format,omitempty"` // container, e.g. mp4, mkv, mov
 }
 
 type ffprobeOut struct {
 	Streams []struct {
 		CodecType  string `json:"codec_type"`
+		CodecName  string `json:"codec_name"`
 		Width      int    `json:"width"`
 		Height     int    `json:"height"`
 		RFrameRate string `json:"r_frame_rate"`
 	} `json:"streams"`
 	Format struct {
-		Duration string `json:"duration"`
+		Duration   string `json:"duration"`
+		FormatName string `json:"format_name"`
 	} `json:"format"`
 }
 
-// probeVideo returns duration/size/fps via ffprobe, falling back to ffmpeg -i.
+// parseFFprobeJSON pulls duration/size/fps/codec/format out of
+// `ffprobe -print_format json -show_format -show_streams` output.
+func parseFFprobeJSON(out []byte) (VideoInfo, error) {
+	var info VideoInfo
+	var p ffprobeOut
+	if err := json.Unmarshal(out, &p); err != nil {
+		return info, err
+	}
+	if d, err := strconv.ParseFloat(p.Format.Duration, 64); err == nil {
+		info.Duration = d
+	}
+	if p.Format.FormatName != "" {
+		// ffprobe reports e.g. "mov,mp4,m4a,3gp,3g2,mj2" — first token.
+		info.Format = strings.Split(p.Format.FormatName, ",")[0]
+	}
+	for _, s := range p.Streams {
+		if s.CodecType == "video" {
+			info.Width, info.Height = s.Width, s.Height
+			info.Codec = s.CodecName
+			if parts := strings.Split(s.RFrameRate, "/"); len(parts) == 2 {
+				num, _ := strconv.ParseFloat(parts[0], 64)
+				den, _ := strconv.ParseFloat(parts[1], 64)
+				if den != 0 {
+					info.FPS = num / den
+				}
+			}
+			break
+		}
+	}
+	return info, nil
+}
+
+// parseFFmpegStderr pulls the same fields out of `ffmpeg -i` stderr:
+// "Input #0, matroska, from ..." gives the container,
+// "Stream #0:0: Video: h264 ..." gives the codec and size.
+func parseFFmpegStderr(s string) VideoInfo {
+	var info VideoInfo
+	if m := regexp.MustCompile(`Duration: (\d+):(\d+):([\d.]+)`).FindStringSubmatch(s); m != nil {
+		h, _ := strconv.ParseFloat(m[1], 64)
+		mi, _ := strconv.ParseFloat(m[2], 64)
+		sec, _ := strconv.ParseFloat(m[3], 64)
+		info.Duration = h*3600 + mi*60 + sec
+	}
+	if m := regexp.MustCompile(`Input #\d+, ([a-z0-9_,]+), from`).FindStringSubmatch(s); m != nil {
+		info.Format = strings.Split(m[1], ",")[0]
+	}
+	if m := regexp.MustCompile(`Stream.*Video: ([a-z0-9_]+)`).FindStringSubmatch(s); m != nil {
+		info.Codec = m[1]
+	}
+	if m := regexp.MustCompile(`Stream.*Video:.* (\d+)x(\d+)`).FindStringSubmatch(s); m != nil {
+		info.Width, _ = strconv.Atoi(m[1])
+		info.Height, _ = strconv.Atoi(m[2])
+	}
+	if m := regexp.MustCompile(`(\d+(?:\.\d+)?) fps`).FindStringSubmatch(s); m != nil {
+		info.FPS, _ = strconv.ParseFloat(m[1], 64)
+	}
+	return info
+}
+
+// isBrowserPlayable reports whether Edge/WebView2 can play the video
+// directly in a <video> tag. Edge plays mp4/webm with h264, vp8, vp9 or
+// av1 — it does NOT play .mkv, .mov, .avi, or HEVC/h265, even though
+// ffmpeg reads them fine. Those need a converted preview (see
+// makePreview). Format is the file extension (ffprobe calls both .mp4
+// and .mov "mov,mp4,...", so the extension is the reliable container).
+func isBrowserPlayable(info VideoInfo) bool {
+	switch strings.ToLower(info.Format) {
+	case "mp4", "m4v", "webm":
+	default:
+		return false
+	}
+	switch strings.ToLower(info.Codec) {
+	case "h264", "avc", "vp8", "vp9", "av1":
+		return true
+	}
+	return false
+}
+
+// makePreview converts input into a browser-playable mp4 at output.
+// h264 video is remuxed (-c:v copy, no quality loss, near-instant);
+// anything else is re-encoded to libx264 CRF 20, downscaled to at most
+// 1280 wide. Audio is copied when possible, else re-encoded to AAC.
+// The preview is only for playback in the UI — scan/export keep using
+// the original file.
+func makePreview(tools Tools, input, output string, info VideoInfo) error {
+	if tools.FFmpeg == "" {
+		return fmt.Errorf("ffmpeg not found")
+	}
+	remux := strings.ToLower(info.Codec) == "h264" || strings.ToLower(info.Codec) == "avc"
+	if remux {
+		args := []string{"-hide_banner", "-y", "-i", input,
+			"-map", "0:v:0", "-map", "0:a?", "-c", "copy",
+			"-movflags", "+faststart", output}
+		if err := exec.Command(tools.FFmpeg, args...).Run(); err == nil {
+			return nil
+		}
+		// Copy failed (e.g. audio codec not allowed in mp4) — retry
+		// with the audio re-encoded to AAC, video still copied.
+		args = []string{"-hide_banner", "-y", "-i", input,
+			"-map", "0:v:0", "-map", "0:a?", "-c:v", "copy", "-c:a", "aac",
+			"-movflags", "+faststart", output}
+		cmd := exec.Command(tools.FFmpeg, args...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("preview remux failed: %w: %s", err, firstLine(string(out)))
+		}
+		return nil
+	}
+	args := []string{"-hide_banner", "-y", "-i", input,
+		"-map", "0:v:0", "-map", "0:a?",
+		"-vf", "scale='min(1280,iw)':-2",
+		"-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
+		"-c:a", "aac", "-movflags", "+faststart", output}
+	cmd := exec.Command(tools.FFmpeg, args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("preview transcode failed: %w: %s", err, firstLine(string(out)))
+	}
+	return nil
+}
+
+// probeVideo returns duration/size/fps/codec/format via ffprobe,
+// falling back to ffmpeg -i. Format is normalised to the file
+// extension: ffprobe reports "mov,mp4,..." for both .mp4 and .mov,
+// and only the extension tells them apart for playback decisions.
 func probeVideo(tools Tools, path string) (VideoInfo, error) {
 	var info VideoInfo
 	if tools.FFmpeg == "" && tools.FFprobe == "" {
@@ -262,29 +388,9 @@ func probeVideo(tools Tools, path string) (VideoInfo, error) {
 	if tools.FFprobe != "" {
 		cmd := exec.Command(tools.FFprobe, "-v", "quiet", "-print_format", "json",
 			"-show_format", "-show_streams", path)
-		out, err := cmd.Output()
-		if err == nil {
-			var p ffprobeOut
-			if json.Unmarshal(out, &p) == nil {
-				if d, err := strconv.ParseFloat(p.Format.Duration, 64); err == nil {
-					info.Duration = d
-				}
-				for _, s := range p.Streams {
-					if s.CodecType == "video" {
-						info.Width, info.Height = s.Width, s.Height
-						if parts := strings.Split(s.RFrameRate, "/"); len(parts) == 2 {
-							num, _ := strconv.ParseFloat(parts[0], 64)
-							den, _ := strconv.ParseFloat(parts[1], 64)
-							if den != 0 {
-								info.FPS = num / den
-							}
-						}
-						break
-					}
-				}
-				if info.Duration > 0 && info.Width > 0 {
-					return info, nil
-				}
+		if out, err := cmd.Output(); err == nil {
+			if p, err := parseFFprobeJSON(out); err == nil && p.Duration > 0 && p.Width > 0 {
+				return normalizeProbe(path, p), nil
 			}
 		}
 	}
@@ -294,24 +400,19 @@ func probeVideo(tools Tools, path string) (VideoInfo, error) {
 	// Fallback: parse `ffmpeg -i` stderr.
 	cmd := exec.Command(tools.FFmpeg, "-hide_banner", "-i", path)
 	out, _ := cmd.CombinedOutput()
-	s := string(out)
-	if m := regexp.MustCompile(`Duration: (\d+):(\d+):([\d.]+)`).FindStringSubmatch(s); m != nil {
-		h, _ := strconv.ParseFloat(m[1], 64)
-		mi, _ := strconv.ParseFloat(m[2], 64)
-		sec, _ := strconv.ParseFloat(m[3], 64)
-		info.Duration = h*3600 + mi*60 + sec
-	}
-	if m := regexp.MustCompile(`Stream.*Video:.* (\d+)x(\d+)`).FindStringSubmatch(s); m != nil {
-		info.Width, _ = strconv.Atoi(m[1])
-		info.Height, _ = strconv.Atoi(m[2])
-	}
-	if m := regexp.MustCompile(`(\d+(?:\.\d+)?) fps`).FindStringSubmatch(s); m != nil {
-		info.FPS, _ = strconv.ParseFloat(m[1], 64)
-	}
+	info = parseFFmpegStderr(string(out))
 	if info.Duration == 0 {
-		return info, fmt.Errorf("could not probe video: %s", firstLine(s))
+		return info, fmt.Errorf("could not probe video: %s", firstLine(string(out)))
 	}
-	return info, nil
+	return normalizeProbe(path, info), nil
+}
+
+// normalizeProbe sets Format from the file extension when present.
+func normalizeProbe(path string, info VideoInfo) VideoInfo {
+	if ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), ".")); ext != "" {
+		info.Format = ext
+	}
+	return info
 }
 
 func firstLine(s string) string {
