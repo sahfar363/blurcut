@@ -70,7 +70,7 @@ func openJobStore(dataDir string) (*JobStore, error) {
 				}
 				j.ExportPath = filepath.Join(dataDir, "exports", j.ID+"_blurred.mp4")
 				j.PreviewPath = filepath.Join(dataDir, "uploads", j.ID+"_preview.mp4")
-				if _, err := os.Stat(j.ExportPath); err == nil {
+				if st, err := os.Stat(j.ExportPath); err == nil && st.Size() > 0 {
 					j.HasExport = true
 				}
 				if _, err := os.Stat(j.PreviewPath); err == nil {
