@@ -9,17 +9,42 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"sync"
 )
 
 //go:embed webui
 var webFS embed.FS
 
 type server struct {
-	cfg   Config
-	tools Tools
-	store *JobStore
+	cfg     Config
+	tools   Tools
+	toolsMu sync.RWMutex
+	store   *JobStore
+	dl      *toolDownloader
+}
+
+func newServer(cfg Config, tools Tools, store *JobStore) *server {
+	return &server{cfg: cfg, tools: tools, store: store, dl: newToolDownloader(cfg.DataDir)}
+}
+
+func (s *server) getTools() Tools {
+	s.toolsMu.RLock()
+	defer s.toolsMu.RUnlock()
+	return s.tools
+}
+
+func (s *server) setTools(t Tools) {
+	s.toolsMu.Lock()
+	s.tools = t
+	s.toolsMu.Unlock()
+}
+
+// redetect re-runs tool detection with the current config and stores it.
+func (s *server) redetect() Tools {
+	t := detectToolsWithConfig(s.cfg)
+	s.setTools(t)
+	return t
 }
 
 func (s *server) routes() http.Handler {
@@ -27,6 +52,10 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/webui/", s.handleWebUI)
 	mux.HandleFunc("/api/status", s.handleStatus)
+	mux.HandleFunc("/api/tools", s.handleTools)
+	mux.HandleFunc("/api/tools/recheck", s.handleToolsRecheck)
+	mux.HandleFunc("/api/tools/download-ffmpeg", s.handleDownloadFFmpeg)
+	mux.HandleFunc("/api/tools/download-tesseract", s.handleDownloadTesseract)
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/jobs", s.handleJobs)
 	mux.HandleFunc("/api/jobs/", s.handleJobSub)
@@ -76,17 +105,97 @@ func (s *server) handleWebUI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	t := s.getTools()
 	writeJSON(w, 200, map[string]any{
 		"version":       version,
-		"ffmpeg":        s.tools.FFmpeg,
-		"ffprobe":       s.tools.FFprobe,
-		"tesseract":     s.tools.Tesseract,
-		"ffmpegOk":      s.tools.FFmpegOK(),
-		"tesseractOk":   s.tools.TesseractOK(),
-		"hasNvenc":      s.tools.HasNVENC,
-		"ffmpegHelp":    "https://ffmpeg.org/download.html (Windows: https://www.gyan.dev/ffmpeg/builds/)",
-		"tesseractHelp": "https://github.com/UB-Mannheim/tesseract/wiki (Windows installer)",
+		"ffmpeg":        t.FFmpeg,
+		"ffprobe":       t.FFprobe,
+		"tesseract":     t.Tesseract,
+		"tessdata":      t.TessData,
+		"ffmpegOk":      t.FFmpegOK(),
+		"tesseractOk":   t.TesseractOK(),
+		"hasNvenc":      t.HasNVENC,
+		"searched":      t.Searched,
+		"ffmpegHelp":    "Bundled in the Windows zip (tools/ffmpeg.exe). Or download from https://www.gyan.dev/ffmpeg/builds/",
+		"tesseractHelp": "Bundled in the Windows zip (tools/tesseract.exe). Or use Tools → Download Tesseract below.",
 	})
+}
+
+// handleTools: GET returns full tool status; POST saves manual tool paths.
+func (s *server) handleTools(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		t := s.getTools()
+		writeJSON(w, 200, map[string]any{
+			"ffmpeg":            map[string]any{"found": t.FFmpegOK(), "path": t.FFmpeg, "searched": t.Searched["ffmpeg"]},
+			"ffprobe":           map[string]any{"found": t.FFprobe != "", "path": t.FFprobe, "searched": t.Searched["ffprobe"]},
+			"tesseract":         map[string]any{"found": t.TesseractOK(), "path": t.Tesseract, "searched": t.Searched["tesseract"]},
+			"tessdata":          t.TessData,
+			"ffmpegDownload":    s.dl.status("ffmpeg"),
+			"tesseractDownload": s.dl.status("tesseract"),
+		})
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	var req struct {
+		FfmpegPath    string `json:"ffmpegPath"`
+		FfprobePath   string `json:"ffprobePath"`
+		TesseractPath string `json:"tesseractPath"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json: "+err.Error(), 400)
+		return
+	}
+	for _, p := range []string{req.FfmpegPath, req.FfprobePath, req.TesseractPath} {
+		if p != "" && !fileExists(p) {
+			http.Error(w, "file not found: "+p, 400)
+			return
+		}
+	}
+	s.cfg.FfmpegPath = req.FfmpegPath
+	s.cfg.FfprobePath = req.FfprobePath
+	s.cfg.TesseractPath = req.TesseractPath
+	if err := saveConfig(s.cfg); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, 200, s.redetect())
+}
+
+func (s *server) handleToolsRecheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	writeJSON(w, 200, s.redetect())
+}
+
+func (s *server) handleDownloadFFmpeg(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	if s.getTools().FFmpegOK() {
+		writeJSON(w, 200, map[string]any{"ok": true, "message": "ffmpeg already found"})
+		return
+	}
+	go s.dl.downloadFFmpeg(func() Tools { return s.redetect() })
+	writeJSON(w, 202, map[string]bool{"ok": true})
+}
+
+func (s *server) handleDownloadTesseract(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	if s.getTools().TesseractOK() {
+		writeJSON(w, 200, map[string]any{"ok": true, "message": "tesseract already found"})
+		return
+	}
+	go s.dl.downloadTesseract()
+	writeJSON(w, 202, map[string]bool{"ok": true})
 }
 
 func (s *server) handleSettings(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +213,15 @@ func (s *server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg.DataDir = s.cfg.DataDir
+	if cfg.FfmpegPath == "" {
+		cfg.FfmpegPath = s.cfg.FfmpegPath
+	}
+	if cfg.FfprobePath == "" {
+		cfg.FfprobePath = s.cfg.FfprobePath
+	}
+	if cfg.TesseractPath == "" {
+		cfg.TesseractPath = s.cfg.TesseractPath
+	}
 	if cfg.Port < 1 || cfg.Port > 65535 {
 		cfg.Port = s.cfg.Port
 	}
@@ -121,6 +239,7 @@ func (s *server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	s.redetect()
 	writeJSON(w, 200, cfg)
 }
 
@@ -133,8 +252,8 @@ func (s *server) handleJobs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	if !s.tools.FFmpegOK() {
-		http.Error(w, "ffmpeg not found — download it from https://ffmpeg.org/download.html (Windows: https://www.gyan.dev/ffmpeg/builds/) and put ffmpeg.exe next to blurcut.exe, then restart", 503)
+	if !s.getTools().FFmpegOK() {
+		http.Error(w, "ffmpeg not found — searched: "+s.getTools().searchedSummary("ffmpeg")+". Put ffmpeg.exe next to blurcut.exe or in tools/, or use Tools → Download ffmpeg in the UI, then restart.", 503)
 		return
 	}
 	if err := r.ParseMultipartForm(512 << 20); err != nil {
@@ -164,10 +283,10 @@ func (s *server) handleJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = dst.Close()
-	info, err := probeVideo(s.tools, videoPath)
+	info, err := probeVideo(s.getTools(), videoPath)
 	if err != nil {
 		_ = os.Remove(videoPath)
-		http.Error(w, "could not read video (is ffmpeg installed?): "+err.Error(), 400)
+		http.Error(w, "could not read video (ffmpeg problem?): "+err.Error(), 400)
 		return
 	}
 	j := &Job{
@@ -222,12 +341,13 @@ func (s *server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleScan(w http.ResponseWriter, r *http.Request, j *Job) {
-	if !s.tools.TesseractOK() {
-		http.Error(w, "tesseract not found — auto-scan needs Tesseract OCR. Windows: install from https://github.com/UB-Mannheim/tesseract/wiki, then restart BlurCut. Manual boxes still work.", 503)
+	tools := s.getTools()
+	if !tools.TesseractOK() {
+		http.Error(w, "tesseract not found — searched: "+tools.searchedSummary("tesseract")+". Auto-scan needs Tesseract OCR; it is bundled in the Windows zip (tools/tesseract.exe), or use Tools → Download Tesseract in the UI. Manual boxes still work.", 503)
 		return
 	}
-	if !s.tools.FFmpegOK() {
-		http.Error(w, "ffmpeg not found", 503)
+	if !tools.FFmpegOK() {
+		http.Error(w, "ffmpeg not found — searched: "+tools.searchedSummary("ffmpeg"), 503)
 		return
 	}
 	if j.Status == "scanning" || j.Status == "exporting" {
@@ -237,7 +357,7 @@ func (s *server) handleScan(w http.ResponseWriter, r *http.Request, j *Job) {
 	s.store.SetStatus(j, "scanning", "Extracting frames and running OCR…", 0)
 	go func() {
 		info := VideoInfo{Duration: j.Duration, Width: j.Width, Height: j.Height, FPS: j.FPS}
-		dets, err := scanVideo(s.tools.FFmpeg, s.tools.Tesseract, j.VideoPath, s.cfg.ScanInterval, s.cfg.Keywords, s.cfg.Patterns, info)
+		dets, err := scanVideo(tools, j.VideoPath, s.cfg.ScanInterval, s.cfg.Keywords, s.cfg.Patterns, info)
 		if err != nil {
 			s.store.SetStatus(j, "error", "Scan failed: "+err.Error(), 0)
 			return
@@ -327,8 +447,9 @@ func (s *server) updateRegion(w http.ResponseWriter, r *http.Request, j *Job, ri
 }
 
 func (s *server) handleExport(w http.ResponseWriter, r *http.Request, j *Job) {
-	if !s.tools.FFmpegOK() {
-		http.Error(w, "ffmpeg not found", 503)
+	tools := s.getTools()
+	if !tools.FFmpegOK() {
+		http.Error(w, "ffmpeg not found — searched: "+tools.searchedSummary("ffmpeg"), 503)
 		return
 	}
 	if len(enabledRegions(j.Regions)) == 0 {
@@ -341,7 +462,7 @@ func (s *server) handleExport(w http.ResponseWriter, r *http.Request, j *Job) {
 	}
 	s.store.SetStatus(j, "exporting", "Blurring and re-encoding…", 0)
 	go func() {
-		err := exportVideo(s.tools, j.VideoPath, j.ExportPath, j.Regions, s.cfg.BlurStrength, func(p float64) {
+		err := exportVideo(tools, j.VideoPath, j.ExportPath, j.Regions, s.cfg.BlurStrength, func(p float64) {
 			s.store.SetStatus(j, "exporting", "Blurring and re-encoding…", p)
 		})
 		if err != nil {
@@ -390,17 +511,4 @@ func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	st, _ := f.Stat()
 	w.Header().Set("Content-Disposition", `attachment; filename="blurred-`+j.Name+`"`)
 	http.ServeContent(w, r, "blurred-"+j.Name, st.ModTime(), f)
-}
-
-func serve(cfg Config, tools Tools, store *JobStore) error {
-	s := &server{cfg: cfg, tools: tools, store: store}
-	addr := ":" + strconv.Itoa(cfg.Port)
-	fmt.Printf("BlurCut %s — open http://localhost:%d\n", version, cfg.Port)
-	if !tools.FFmpegOK() {
-		fmt.Println("WARNING: ffmpeg not found — export/scan will not work until ffmpeg is installed (https://ffmpeg.org/download.html)")
-	}
-	if !tools.TesseractOK() {
-		fmt.Println("NOTE: tesseract not found — auto-scan disabled, manual boxes still work (https://github.com/UB-Mannheim/tesseract/wiki)")
-	}
-	return http.ListenAndServe(addr, s.routes())
 }
