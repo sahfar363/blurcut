@@ -390,8 +390,22 @@ func (s *server) handleScan(w http.ResponseWriter, r *http.Request, j *Job) {
 		for _, d := range dets {
 			regions = append(regions, d.Region)
 		}
-		j.Regions = regions
-		s.store.SetStatus(j, "scanned", fmt.Sprintf("Found %d sensitive region(s)", len(dets)), 1)
+		// Auto-scan replaces the auto-detected regions, but never wipes
+		// boxes the user drew by hand — those are kept.
+		kept := 0
+		for _, r := range j.Regions {
+			if r.Source == "manual" {
+				kept++
+			}
+		}
+		j.Regions = mergeScanRegions(j.Regions, regions)
+		msg := fmt.Sprintf("Found %d sensitive region(s)", len(dets))
+		if kept == 1 {
+			msg += " — kept 1 manual box"
+		} else if kept > 1 {
+			msg += fmt.Sprintf(" — kept %d manual boxes", kept)
+		}
+		s.store.SetStatus(j, "scanned", msg, 1)
 	}()
 	writeJSON(w, 202, map[string]bool{"ok": true})
 }
