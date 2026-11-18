@@ -11,11 +11,37 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/jchv/go-webview2"
 )
 
+var (
+	kernel32          = syscall.NewLazyDLL("kernel32.dll")
+	user32            = syscall.NewLazyDLL("user32.dll")
+	procGetConsoleWin = kernel32.NewProc("GetConsoleWindow")
+	procShowWindow    = user32.NewProc("ShowWindow")
+)
+
+// hideConsoleWindow hides this process's console window, if it has one.
+// The Windows release binary is built as a console-subsystem app, so
+// double-clicking blurcut.exe spawns a console window next to the app
+// window. Hiding it here — once the GUI window is about to open —
+// keeps the console for CLI use (scan/blur/serve --no-browser never
+// call runAppWindow). If the binary is ever built with
+// -ldflags="-H windowsgui" there is no console at all and
+// GetConsoleWindow returns 0, so this becomes a no-op.
+func hideConsoleWindow() {
+	hwnd, _, _ := procGetConsoleWin.Call()
+	if hwnd == 0 {
+		return
+	}
+	const swHide = 0
+	procShowWindow.Call(hwnd, swHide)
+}
+
 func runAppWindow(url, dataDir string) error {
+	hideConsoleWindow()
 	dataPath := filepath.Join(dataDir, "webview2")
 	if err := os.MkdirAll(dataPath, 0o755); err != nil {
 		return fmt.Errorf("webview2 data dir: %w", err)
