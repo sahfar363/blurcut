@@ -14,7 +14,7 @@ button:disabled{opacity:.5;cursor:default}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px}
 .hint{color:#9ca3af;font-size:13px}
 #videoWrap{position:relative;max-width:100%;background:#000;border-radius:8px;overflow:hidden}
-#video{width:100%;display:block;max-height:60vh}
+#video{width:100%;display:block;max-height:60vh;object-fit:contain}
 #overlay{position:absolute;inset:0;pointer-events:none}
 .box{position:absolute;border:2px solid #f59e0b;background:rgba(245,158,11,.18);cursor:pointer;pointer-events:auto}
 button.active{background:#f59e0b;color:#111827;font-weight:600}
