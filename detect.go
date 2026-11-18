@@ -11,7 +11,7 @@ import (
 // Region is one blur target: a box (pixels + relative 0-1) over a time range.
 type Region struct {
 	ID      string  `json:"id"`
-	Label   string  `json:"label"` // url, email, password, apikey, keyword, possible-key, manual
+	Label   string  `json:"label"` // url, email, password, apikey, crypto, keyword, possible-key, manual
 	Text    string  `json:"text"`  // matched text (redacted in UI if long)
 	X       int     `json:"x"`
 	Y       int     `json:"y"`
@@ -41,6 +41,9 @@ var (
 	rePassword = regexp.MustCompile(`(?i)\b(password|passwd|pwd)\b`)
 	reAPIKey   = regexp.MustCompile(`(?i)(api[_-]?key|apikey|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{10,}|-----BEGIN.*PRIVATE KEY-----)`)
 	reKeyValue = regexp.MustCompile(`(?i)(api[_-]?key|secret|token|bearer)\s*[:=]`)
+	// Crypto addresses: Bitcoin bech32 (bc1…), legacy (1…/3…, base58),
+	// Ethereum (0x + 40 hex). No dot+TLD, so they never look like URLs.
+	reCrypto = regexp.MustCompile(`(?i)(bc1[a-z0-9]{25,}|[13][a-km-zA-HJ-NP-Z1-9]{25,34}|0x[a-f0-9]{40})`)
 	// Suspicious token: long run of letters/digits/_/- only (checked
 	// per token in classifyText, with a letter+digit requirement).
 	reSuspicious = regexp.MustCompile(`^[A-Za-z0-9_-]{20,}$`)
@@ -60,6 +63,9 @@ func classifyText(text string, keywords []string, patterns map[string]bool) stri
 	}
 	if patterns["password"] && rePassword.MatchString(t) {
 		return "password"
+	}
+	if patterns["crypto"] && reCrypto.MatchString(t) {
+		return "crypto"
 	}
 	if patterns["url"] && reURL.MatchString(t) {
 		return "url"
