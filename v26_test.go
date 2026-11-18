@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,9 +24,10 @@ func makeSmallScreenTextVideo(t *testing.T, ffmpeg string) string {
 	}
 	dir := t.TempDir()
 	texts := map[string]string{
-		"url.txt": "https://github.com/sahfar363/blurcut",
-		"pw.txt":  "password: hunter2",
-		"key.txt": "export API_KEY=sk-test-Ab3dEf7gHk9mNp2rSt5",
+		"url.txt":    "https://github.com/sahfar363/blurcut",
+		"pw.txt":     "password: hunter2",
+		"key.txt":    "export API_KEY=sk-test-Ab3dEf7gHk9mNp2rSt5",
+		"wallet.txt": "wallet 0x7aB3c4D5e6F708192a3B4c5D6e7F8091a2B3c4d5",
 	}
 	for name, text := range texts {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
@@ -33,7 +37,8 @@ func makeSmallScreenTextVideo(t *testing.T, ffmpeg string) string {
 	out := filepath.Join(dir, "small.mp4")
 	vf := "drawtext=fontfile=" + font + ":textfile=" + filepath.Join(dir, "url.txt") + ":fontsize=13:fontcolor=black:x=121:y=60" +
 		",drawtext=fontfile=" + font + ":textfile=" + filepath.Join(dir, "pw.txt") + ":fontsize=13:fontcolor=black:x=121:y=340" +
-		",drawtext=fontfile=" + font + ":textfile=" + filepath.Join(dir, "key.txt") + ":fontsize=13:fontcolor=black:x=121:y=380"
+		",drawtext=fontfile=" + font + ":textfile=" + filepath.Join(dir, "key.txt") + ":fontsize=13:fontcolor=black:x=121:y=380" +
+		",drawtext=fontfile=" + font + ":textfile=" + filepath.Join(dir, "wallet.txt") + ":fontsize=13:fontcolor=black:x=121:y=420"
 	args := []string{"-hide_banner", "-y", "-f", "lavfi", "-i", "color=c=white:s=1920x1080:d=3:r=25",
 		"-vf", vf, "-c:v", "libx264", "-crf", "23", "-pix_fmt", "yuv420p", out}
 	if err := exec.Command(ffmpeg, args...).Run(); err != nil {
@@ -172,7 +177,7 @@ func TestScanSmallScreenText(t *testing.T) {
 	}
 	video := makeSmallScreenTextVideo(t, ff)
 	tools := Tools{FFmpeg: ff, Tesseract: ts}
-	patterns := map[string]bool{"url": true, "email": true, "password": true, "apikey": true}
+	patterns := map[string]bool{"url": true, "email": true, "password": true, "apikey": true, "crypto": true}
 	probe := VideoInfo{Duration: 3, Width: 1920, Height: 1080, FPS: 25}
 	dets, err := scanVideo(tools, video, 1.0, nil, patterns, probe, nil)
 	if err != nil {
@@ -183,9 +188,10 @@ func TestScanSmallScreenText(t *testing.T) {
 		labels[d.Label] = d.Region
 		t.Logf("found %s %q at %d,%d %dx%d (%.2f-%.2fs)", d.Label, d.Text, d.X, d.Y, d.W, d.H, d.Start, d.End)
 	}
-	// The video draws a URL (top), "password: hunter2" and
-	// "export API_KEY=<redacted>" — all three must be found now.
-	for _, want := range []string{"url", "password", "apikey"} {
+	// The video draws a URL (top), "password: hunter2",
+	// "export API_KEY=<redacted>" and an Ethereum address — all four must be
+	// found now.
+	for _, want := range []string{"url", "password", "apikey", "crypto"} {
 		if _, ok := labels[want]; !ok {
 			t.Errorf("scan missed %q; found labels: %v", want, labels)
 		}
@@ -201,6 +207,87 @@ func TestScanSmallScreenText(t *testing.T) {
 	}
 	if r, ok := labels["apikey"]; ok && (r.Y < 350 || r.Y > 410 || r.X < 80 || r.X > 220) {
 		t.Errorf("apikey box at %d,%d, want near 121,382", r.X, r.Y)
+	}
+	if r, ok := labels["crypto"]; ok && (r.Y < 390 || r.Y > 450 || r.X < 80 || r.X > 220) {
+		t.Errorf("crypto box at %d,%d, want near 121,420", r.X, r.Y)
+	}
+}
+
+func TestCryptoPattern(t *testing.T) {
+	pats := map[string]bool{"crypto": true}
+	// Bitcoin bech32, Bitcoin legacy, Ethereum.
+	for _, addr := range []string{
+		"bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+		"1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+		"3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
+		"0x7aB3c4D5e6F708192a3B4c5D6e7F8091a2B3c4d5",
+		"send it to 0x7aB3c4D5e6F708192a3B4c5D6e7F8091a2B3c4d5 please",
+	} {
+		if got := classifyText(addr, nil, pats); got != "crypto" {
+			t.Errorf("classifyText(%q) = %q, want crypto", addr, got)
+		}
+	}
+	// Ordinary words and short hex are not addresses.
+	for _, text := range []string{"hello world", "0x1234", "bc1short", "wallet"} {
+		if got := classifyText(text, nil, pats); got != "" {
+			t.Errorf("classifyText(%q) = %q, want empty", text, got)
+		}
+	}
+	// Pattern off: nothing matches.
+	if got := classifyText("0x7aB3c4D5e6F708192a3B4c5D6e7F8091a2B3c4d5", nil, map[string]bool{"crypto": false}); got != "" {
+		t.Errorf("crypto pattern off, got %q", got)
+	}
+	// A URL still wins over an address-shaped token in its path.
+	all := map[string]bool{"url": true, "crypto": true}
+	if got := classifyText("https://example.com", nil, all); got != "url" {
+		t.Errorf("plain URL = %q, want url", got)
+	}
+}
+
+func TestUpdateRegionTimes(t *testing.T) {
+	store, err := openJobStore(t.TempDir(), Tools{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Add(&Job{ID: "j1", Duration: 60, Width: 1920, Height: 1080,
+		Regions: []Region{{ID: "m1", Label: "manual", Start: 10, End: 15, Enabled: true, Source: "manual"}}})
+	srv := newServer(Config{DataDir: store.dir}, Tools{}, store)
+	j, _ := store.Get("j1")
+
+	post := func(body string) (int, Region) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/api/jobs/j1/regions/m1", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.updateRegion(rec, req, j, "m1")
+		var r Region
+		if rec.Code == 200 {
+			_ = json.NewDecoder(rec.Body).Decode(&r)
+		}
+		return rec.Code, r
+	}
+
+	// Plain time change persists.
+	if code, r := post(`{"start":20,"end":25}`); code != 200 || r.Start != 20 || r.End != 25 {
+		t.Fatalf("time update = code %d region %+v, want 200 with 20-25", code, r)
+	}
+	// Start of 0 is a real value, not "not sent".
+	if code, r := post(`{"start":0,"end":5}`); code != 200 || r.Start != 0 || r.End != 5 {
+		t.Fatalf("start=0 update = code %d region %+v, want 200 with 0-5", code, r)
+	}
+	// End past the video duration is clamped.
+	if code, r := post(`{"start":55,"end":999}`); code != 200 || r.Start != 55 || r.End != 60 {
+		t.Fatalf("clamp update = code %d region %+v, want 200 with 55-60", code, r)
+	}
+	// End before start is rejected and the region is unchanged.
+	if code, _ := post(`{"start":30,"end":25}`); code != 400 {
+		t.Fatalf("end<=start update = code %d, want 400", code)
+	}
+	if got := j.Regions[0]; got.Start != 55 || got.End != 60 {
+		t.Errorf("rejected update changed the region to %v-%v, want 55-60", got.Start, got.End)
+	}
+	// An enabled-only update must not clobber the times (or vice versa).
+	if code, r := post(`{"enabled":false}`); code != 200 || r.Enabled || r.Start != 55 || r.End != 60 {
+		t.Fatalf("enabled-only update = code %d region %+v, want 200 with times kept", code, r)
 	}
 }
 
