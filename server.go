@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -339,6 +340,8 @@ func (s *server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	case action == "scan" && r.Method == http.MethodPost:
 		s.handleScan(w, r, j)
+	case action == "ocr-preview" && r.Method == http.MethodPost:
+		s.handleOCRPreview(w, r, j)
 	case action == "regions" && r.Method == http.MethodGet:
 		writeJSON(w, 200, j.Regions)
 	case action == "regions" && r.Method == http.MethodPost:
@@ -355,6 +358,57 @@ func (s *server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "unknown action", 404)
 	}
+}
+
+// handleOCRPreview answers "what does the scan see here?": it OCRs
+// one frame at the requested time (JSON {"time": seconds}, or ?t=)
+// with the same upscale the scan uses and returns the raw words.
+// Nothing is stored in the job.
+func (s *server) handleOCRPreview(w http.ResponseWriter, r *http.Request, j *Job) {
+	tools := s.getTools()
+	if !tools.TesseractOK() {
+		http.Error(w, "tesseract not found — Auto-scan needs Tesseract OCR; it is bundled in the Windows zip (tools/tesseract.exe), or use Tools → Download Tesseract in the UI.", 503)
+		return
+	}
+	if !tools.FFmpegOK() {
+		http.Error(w, "ffmpeg not found — searched: "+tools.searchedSummary("ffmpeg"), 503)
+		return
+	}
+	var body struct {
+		Time float64 `json:"time"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	t := body.Time
+	if q := r.URL.Query().Get("t"); q != "" {
+		if v, err := strconv.ParseFloat(q, 64); err == nil {
+			t = v
+		}
+	}
+	if t < 0 {
+		t = 0
+	}
+	if j.Duration > 0 && t > j.Duration {
+		t = j.Duration
+	}
+	info := VideoInfo{Duration: j.Duration, Width: j.Width, Height: j.Height, FPS: j.FPS}
+	words, err := ocrPreviewFrame(tools, j.VideoPath, t, info)
+	if err != nil {
+		http.Error(w, "OCR preview failed: "+err.Error(), 500)
+		return
+	}
+	type wordOut struct {
+		Text string `json:"text"`
+		Conf int    `json:"conf"`
+		X    int    `json:"x"`
+		Y    int    `json:"y"`
+		W    int    `json:"w"`
+		H    int    `json:"h"`
+	}
+	outs := make([]wordOut, 0, len(words))
+	for _, wd := range words {
+		outs = append(outs, wordOut{Text: wd.Text, Conf: wd.Conf, X: wd.X, Y: wd.Y, W: wd.W, H: wd.H})
+	}
+	writeJSON(w, 200, map[string]any{"time": t, "words": outs})
 }
 
 func (s *server) handleScan(w http.ResponseWriter, r *http.Request, j *Job) {
