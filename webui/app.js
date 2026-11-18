@@ -109,7 +109,8 @@ function renderRegions() {
   (currentJob.regions || []).forEach(r => {
     const tr = document.createElement('tr');
     tr.innerHTML = '<td><input type="checkbox" ' + (r.enabled ? 'checked' : '') + ' data-id="' + r.id + '" class="toggle"></td>' +
-      '<td>' + esc(r.label) + '</td><td>' + esc(r.source || 'auto') + '</td><td>' + fmtTime(r.start) + '–' + fmtTime(r.end) + '</td>' +
+      '<td>' + esc(r.label) + '</td><td>' + esc(r.source || 'auto') + '</td>' +
+      '<td title="' + fmtTime(r.start) + ' – ' + fmtTime(r.end) + '"><input type="number" step="0.1" min="0" value="' + r.start.toFixed(1) + '" data-id="' + r.id + '" class="tstart" style="width:4.5em">–<input type="number" step="0.1" min="0" value="' + r.end.toFixed(1) + '" data-id="' + r.id + '" class="tend" style="width:4.5em"></td>' +
       '<td title="' + esc(r.text) + '">' + esc(r.text || '') + '</td>' +
       '<td><button data-id="' + r.id + '" class="del">✕</button></td>';
     tbody.appendChild(tr);
@@ -129,6 +130,20 @@ function renderRegions() {
     const r = currentJob.regions.find(x => x.id === cb.dataset.id);
     await api('/api/jobs/' + currentJob.id + '/regions/' + r.id, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: cb.checked }) });
     r.enabled = cb.checked; renderRegions();
+  });
+  // Start/end times are editable (seconds, one decimal). Saves on
+  // change; an invalid range reverts to the saved values.
+  tbody.querySelectorAll('.tstart,.tend').forEach(inp => inp.onchange = async () => {
+    const r = currentJob.regions.find(x => x.id === inp.dataset.id);
+    const row = inp.closest('tr');
+    const start = parseFloat(row.querySelector('.tstart').value);
+    const end = parseFloat(row.querySelector('.tend').value);
+    if (isNaN(start) || isNaN(end) || end <= start) { renderRegions(); return; }
+    if (start === r.start && end === r.end) return;
+    try {
+      const upd = await api('/api/jobs/' + currentJob.id + '/regions/' + r.id, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ start, end }) });
+      r.start = upd.start; r.end = upd.end; renderRegions();
+    } catch (e) { renderRegions(); }
   });
   tbody.querySelectorAll('.del').forEach(b => b.onclick = async () => {
     await api('/api/jobs/' + currentJob.id + '/regions/' + b.dataset.id, { method: 'DELETE' });
@@ -154,7 +169,10 @@ function startPoll() {
     $('#progress').textContent = j.status === 'scanning' ? (j.message || 'Scanning…')
       : j.status === 'exporting' ? 'Exporting ' + Math.round(j.progress * 100) + '%'
       : (j.message || '');
-    if (j.status === 'scanned' || j.status === 'done' || j.status === 'error') { renderRegions(); $('#jobInfo').textContent = j.name + ' — ' + j.width + '×' + j.height + ', ' + fmtTime(j.duration) + ' (' + j.status + ': ' + (j.message || '') + ')'; }
+    // Don't re-render the region table while the user is typing a
+    // start/end time into it — the re-render would eat their input.
+    const typingTime = document.activeElement && (document.activeElement.classList.contains('tstart') || document.activeElement.classList.contains('tend'));
+    if (j.status === 'scanned' || j.status === 'done' || j.status === 'error') { if (!typingTime) renderRegions(); $('#jobInfo').textContent = j.name + ' — ' + j.width + '×' + j.height + ', ' + fmtTime(j.duration) + ' (' + j.status + ': ' + (j.message || '') + ')'; }
     if (j.hasExport) { $('#downloadLink').hidden = false; $('#downloadLink').href = '/download/' + j.id; }
     if (j.status === 'done' || j.status === 'error' || j.status === 'scanned') loadJobs();
   }, 1500);
@@ -265,6 +283,7 @@ async function loadSettings() {
   $('#setInterval').value = String(c.scanInterval); $('#setBlur').value = c.blurStrength; $('#blurVal').textContent = c.blurStrength;
   $('#patUrl').checked = !!c.patterns.url; $('#patEmail').checked = !!c.patterns.email;
   $('#patPassword').checked = !!c.patterns.password; $('#patApikey').checked = !!c.patterns.apikey;
+  $('#patCrypto').checked = !!c.patterns.crypto;
   $('#patSuspicious').checked = !!c.patterns.suspicious;
   $('#setKeywords').value = (c.keywords || []).join('\n');
 }
@@ -272,7 +291,7 @@ $('#setBlur').oninput = e => $('#blurVal').textContent = e.target.value;
 $('#saveSettings').onclick = async () => {
   const cfg = { port: 8080, scanInterval: parseFloat($('#setInterval').value), blurStrength: parseInt($('#setBlur').value, 10),
     keywords: $('#setKeywords').value.split('\n').map(s => s.trim()).filter(Boolean),
-    patterns: { url: $('#patUrl').checked, email: $('#patEmail').checked, password: $('#patPassword').checked, apikey: $('#patApikey').checked, suspicious: $('#patSuspicious').checked },
+    patterns: { url: $('#patUrl').checked, email: $('#patEmail').checked, password: $('#patPassword').checked, apikey: $('#patApikey').checked, crypto: $('#patCrypto').checked, suspicious: $('#patSuspicious').checked },
     ffmpegPath: ($('#toolFfmpeg') ? $('#toolFfmpeg').value.trim() : ''), tesseractPath: ($('#toolTesseract') ? $('#toolTesseract').value.trim() : '') };
   await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) });
   $('#settingsMsg').textContent = 'Saved.';
