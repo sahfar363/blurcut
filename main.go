@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-const version = "0.2.4"
+const version = "0.2.5"
 
 func now() time.Time { return time.Now() }
 
@@ -109,7 +109,7 @@ func main() {
 		}
 	}
 	tools := detectToolsWithConfig(cfg)
-	store, err := openJobStore(dataDir)
+	store, err := openJobStore(dataDir, tools)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "blurcut: could not open data store:", err)
 		os.Exit(1)
