@@ -129,9 +129,15 @@ the scan found versus what you drew. A "What does the scan see
 here?" button OCRs the frame at the video's current time and shows
 the raw words — if it reads your screen, the scan will find things.
 Bare "password" labels (login forms, no `:` after them) are now
-found too. There is also a new opt-in pattern, off by default, that
-flags long random-looking tokens (20+ letters/digits, "possible-key")
-— off because it can blur innocent text.
+found too, as are cryptocurrency addresses (Bitcoin bech32 and
+legacy, Ethereum `0x…`) — they have recognizable shapes, so the scan
+can find them without any AI. There is also a new opt-in pattern, off
+by default, that flags long random-looking tokens (20+ letters/digits,
+"possible-key") — off because it can blur innocent text. Region
+start/end times are editable right in the region list (seconds, one
+decimal), for manual and auto-detected boxes alike — the old 5-second
+window on a hand-drawn box was invisible before, which is also why a
+manual blur could look like a second, random blur a few seconds later.
 
 ## Build from source
 
