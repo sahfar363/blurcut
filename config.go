@@ -46,7 +46,7 @@ func defaultConfig(dataDir string) Config {
 		ScanInterval: 1.0,
 		BlurStrength: 20,
 		Keywords:     []string{},
-		Patterns:     map[string]bool{"url": true, "email": true, "password": true, "apikey": true},
+		Patterns:     map[string]bool{"url": true, "email": true, "password": true, "apikey": true, "suspicious": false},
 	}
 }
 
@@ -77,7 +77,7 @@ func loadConfig(dataDir string) (Config, error) {
 		cfg.BlurStrength = 20
 	}
 	if cfg.Patterns == nil {
-		cfg.Patterns = map[string]bool{"url": true, "email": true, "password": true, "apikey": true}
+		cfg.Patterns = map[string]bool{"url": true, "email": true, "password": true, "apikey": true, "suspicious": false}
 	}
 	return cfg, nil
 }
