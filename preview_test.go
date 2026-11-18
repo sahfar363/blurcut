@@ -190,7 +190,7 @@ func TestJobStoreReconstructsPreviewAndExt(t *testing.T) {
 	jobs := []Job{{ID: id, Name: "clip.mkv", Duration: 240}}
 	b, _ := json.Marshal(jobs)
 	_ = os.WriteFile(filepath.Join(dir, "jobs.json"), b, 0o644)
-	store, err := openJobStore(dir)
+	store, err := openJobStore(dir, Tools{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestJobStoreResetsInterruptedScan(t *testing.T) {
 	jobs := []Job{{ID: "9", Name: "clip.mp4", Status: "scanning", Message: "Extracting frames…"}}
 	b, _ := json.Marshal(jobs)
 	_ = os.WriteFile(filepath.Join(dir, "jobs.json"), b, 0o644)
-	store, err := openJobStore(dir)
+	store, err := openJobStore(dir, Tools{})
 	if err != nil {
 		t.Fatal(err)
 	}
