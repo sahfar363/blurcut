@@ -13,6 +13,41 @@ function setDrawMode(on) {
   if (hint) hint.hidden = !drawMode;
 }
 
+// The video element can be wider than the picture it shows: max-height
+// caps the element, and object-fit: contain letterboxes the picture
+// inside it (black bars left/right). Draw coordinates are fractions of
+// the OVERLAY, and the export treats them as fractions of the true
+// video — so the overlay must match the displayed picture exactly, not
+// the element box. Before this, on a short screen a hand-drawn box came
+// out ~80% wide in the export while the preview looked right, because
+// the preview rendered the same fractions on the same too-wide overlay.
+// (Auto-scan boxes had the same error in reverse in the preview: their
+// fractions are true video fractions, shown stretched on the overlay.)
+function videoContentRect(elW, elH, iw, ih) {
+  if (!elW || !elH || !iw || !ih) return { left: 0, top: 0, width: elW, height: elH };
+  const s = Math.min(elW / iw, elH / ih);
+  const w = iw * s, h = ih * s;
+  return { left: (elW - w) / 2, top: (elH - h) / 2, width: w, height: h };
+}
+
+function fitOverlay() {
+  const v = $('#video'), ov = $('#overlay');
+  if (!v || !ov) return;
+  if (!v.videoWidth || !v.videoHeight) {
+    // No video loaded yet (or metadata not in): full-size overlay.
+    ov.style.left = '0'; ov.style.top = '0'; ov.style.width = '100%'; ov.style.height = '100%';
+    return;
+  }
+  const r = videoContentRect(v.clientWidth, v.clientHeight, v.videoWidth, v.videoHeight);
+  // The video element fills the wrap (display:block, width:100%), so its
+  // offset inside the wrap is 0 — included anyway in case that changes.
+  ov.style.left = (v.offsetLeft + r.left) + 'px';
+  ov.style.top = (v.offsetTop + r.top) + 'px';
+  ov.style.width = r.width + 'px';
+  ov.style.height = r.height + 'px';
+}
+window.addEventListener('resize', fitOverlay);
+
 async function api(path, opts) {
   const r = await fetch(path, opts);
   if (!r.ok) { const t = await r.text(); throw new Error(t || r.statusText); }
@@ -94,6 +129,7 @@ async function selectJob(id) {
   $('#previewCard').hidden = false;
   $('#jobInfo').textContent = currentJob.name + ' — ' + currentJob.width + '×' + currentJob.height + ', ' + fmtTime(currentJob.duration) + ' (' + currentJob.status + ')';
   const v = $('#video'); v.src = videoSrc(id, currentJob.previewConverted);
+  fitOverlay(); // metadata may not be in yet — loadedmetadata re-fits it
   $('#previewNote').hidden = !currentJob.previewConverted;
   renderRegions();
   $('#downloadLink').hidden = !currentJob.hasExport;
@@ -161,6 +197,7 @@ function startPoll() {
     if (j.previewConverted && !currentJob.previewConverted) {
       const v = $('#video');
       v.src = videoSrc(j.id, true);
+      fitOverlay();
       $('#previewNote').hidden = false;
     }
     currentJob = j;
@@ -231,6 +268,23 @@ $('#deleteJobBtn').onclick = async () => {
   loadJobs();
 };
 
+// Fullscreen preview — the whole #videoWrap (video + overlay + boxes),
+// so drawing keeps working while fullscreen. Entering/leaving
+// fullscreen changes the element size, so the overlay is refit.
+$('#fullscreenBtn').onclick = async () => {
+  const wrap = $('#videoWrap');
+  if (!wrap) return;
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await wrap.requestFullscreen();
+  } catch (e) { /* fullscreen denied — stay as-is */ }
+};
+document.addEventListener('fullscreenchange', () => {
+  const btn = $('#fullscreenBtn');
+  if (btn) btn.textContent = document.fullscreenElement ? '⛶ Exit fullscreen' : '⛶ Fullscreen';
+  fitOverlay();
+});
+
 // draw a manual box on the video (only while drawing mode is on)
 $('#drawToggleBtn').onclick = () => setDrawMode(!drawMode);
 (function () {
@@ -263,6 +317,11 @@ $('#drawToggleBtn').onclick = () => setDrawMode(!drawMode);
     setDrawMode(false); // box drawn — back to playback mode so play works right away
   });
   v.addEventListener('timeupdate', renderRegions);
+  // The picture's size inside the element is only known once the
+  // metadata is in — re-fit the overlay then, and whenever the
+  // source swaps (e.g. the converted preview replaces the original).
+  v.addEventListener('loadedmetadata', fitOverlay);
+  v.addEventListener('loadeddata', fitOverlay);
   // If the preview file itself will not play (odd codec, bad remux, …),
   // say so plainly and offer a reload — the file is still fine for
   // scan/export, which never use the preview.
