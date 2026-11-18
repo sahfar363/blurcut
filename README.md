@@ -117,6 +117,22 @@ starts, it is deleted instead of being offered as a download. Jobs
 can be removed from the list with the "Delete job" button, which
 deletes the job and its files.
 
+**Auto-scan can now read small screen text.** In 0.2.5 and earlier,
+frames were OCRed at their original size, and tesseract misread
+small text (browser bars, terminal, 13px at 1080p) — "password:"
+came back as "sword:", so no pattern matched and the scan found
+nothing on real tutorial videos. Frames are now upscaled 2x before
+OCR (4K video is already big enough), and the boxes are mapped back
+to the original coordinates. The region list shows each region's
+source (manual/auto) and time range, so you can see at a glance what
+the scan found versus what you drew. A "What does the scan see
+here?" button OCRs the frame at the video's current time and shows
+the raw words — if it reads your screen, the scan will find things.
+Bare "password" labels (login forms, no `:` after them) are now
+found too. There is also a new opt-in pattern, off by default, that
+flags long random-looking tokens (20+ letters/digits, "possible-key")
+— off because it can blur innocent text.
+
 ## Build from source
 
 ```
@@ -152,7 +168,8 @@ which patterns to detect) live in the web UI and in
 
 ## How it works
 
-1. ffmpeg extracts one frame per second (`fps` filter).
+1. ffmpeg extracts one frame per second (`fps` filter), upscaled 2x
+   before OCR so small screen text reads correctly (4K is left alone).
 2. Tesseract OCR reads each frame as TSV (word + box + confidence).
 3. Words matching a sensitive pattern are grouped into boxes, padded,
    merged across frames into time ranges.
