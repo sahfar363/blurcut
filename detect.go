@@ -11,7 +11,7 @@ import (
 // Region is one blur target: a box (pixels + relative 0-1) over a time range.
 type Region struct {
 	ID      string  `json:"id"`
-	Label   string  `json:"label"` // url, email, password, apikey, keyword, manual
+	Label   string  `json:"label"` // url, email, password, apikey, keyword, possible-key, manual
 	Text    string  `json:"text"`  // matched text (redacted in UI if long)
 	X       int     `json:"x"`
 	Y       int     `json:"y"`
@@ -34,11 +34,16 @@ type Detection struct {
 }
 
 var (
-	reURL      = regexp.MustCompile(`(?i)(https?://\S+|www\.\S+|[a-z0-9-]+\.(com|net|io|dev|org|app|gg|me|co|tv)\S*)`)
-	reEmail    = regexp.MustCompile(`(?i)[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}`)
-	rePassword = regexp.MustCompile(`(?i)(password|passwd|pwd)\s*[:=]`)
+	reURL   = regexp.MustCompile(`(?i)(https?://\S+|www\.\S+|[a-z0-9-]+\.(com|net|io|dev|org|app|gg|me|co|tv)\S*)`)
+	reEmail = regexp.MustCompile(`(?i)[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}`)
+	// Bare label words too: login forms show "password" with no : or =
+	// after it. \b keeps "password123" (a value, not a label) unmatched.
+	rePassword = regexp.MustCompile(`(?i)\b(password|passwd|pwd)\b`)
 	reAPIKey   = regexp.MustCompile(`(?i)(api[_-]?key|apikey|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{10,}|-----BEGIN.*PRIVATE KEY-----)`)
 	reKeyValue = regexp.MustCompile(`(?i)(api[_-]?key|secret|token|bearer)\s*[:=]`)
+	// Suspicious token: long run of letters/digits/_/- only (checked
+	// per token in classifyText, with a letter+digit requirement).
+	reSuspicious = regexp.MustCompile(`^[A-Za-z0-9_-]{20,}$`)
 )
 
 // classifyText returns the label for a word/phrase, or "" if not sensitive.
@@ -63,6 +68,27 @@ func classifyText(text string, keywords []string, patterns map[string]bool) stri
 	for _, kw := range keywords {
 		if kw != "" && strings.Contains(lower, strings.ToLower(kw)) {
 			return "keyword"
+		}
+	}
+	// Last, so real URLs/emails/keys are never relabelled: a long
+	// token (letters/digits/_/-, at least one letter AND one digit).
+	if patterns["suspicious"] {
+		for _, tok := range strings.Fields(t) {
+			if !reSuspicious.MatchString(tok) {
+				continue
+			}
+			hasLetter, hasDigit := false, false
+			for _, c := range tok {
+				if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' {
+					hasLetter = true
+				}
+				if c >= '0' && c <= '9' {
+					hasDigit = true
+				}
+			}
+			if hasLetter && hasDigit {
+				return "possible-key"
+			}
 		}
 	}
 	return ""
@@ -101,10 +127,16 @@ type OCRWord struct {
 
 // groupWords merges adjacent words on the same line into one box.
 // Words within 40px horizontally and 12px vertically of the current box join it.
-func groupWords(words []OCRWord) []OCRWord {
+// scale is the OCR upscale factor: gaps are measured in upscaled
+// pixels, so the thresholds scale with it (1 = original size).
+func groupWords(words []OCRWord, scale float64) []OCRWord {
 	if len(words) == 0 {
 		return nil
 	}
+	if scale < 1 {
+		scale = 1
+	}
+	gapX, gapY := 40.0*scale, 12.0*scale
 	sorted := append([]OCRWord(nil), words...)
 	sort.Slice(sorted, func(i, j int) bool {
 		if sorted[i].Y != sorted[j].Y {
@@ -115,8 +147,8 @@ func groupWords(words []OCRWord) []OCRWord {
 	var groups []OCRWord
 	cur := sorted[0]
 	for _, w := range sorted[1:] {
-		sameLine := abs(w.Y-cur.Y) <= 12
-		near := w.X <= cur.X+cur.W+40
+		sameLine := float64(abs(w.Y-cur.Y)) <= gapY
+		near := float64(w.X) <= float64(cur.X+cur.W)+gapX
 		if sameLine && near {
 			// extend cur box to include w
 			right := max(cur.X+cur.W, w.X+w.W)
