@@ -139,6 +139,25 @@ decimal), for manual and auto-detected boxes alike — the old 5-second
 window on a hand-drawn box was invisible before, which is also why a
 manual blur could look like a second, random blur a few seconds later.
 
+**Manual boxes now keep the width you drew.** In 0.2.6 and earlier,
+the drawing overlay covered the whole video element, but on a short
+screen the video picture inside that element is letterboxed
+(`max-height: 60vh` caps the element, the picture gets black bars
+left and right) — so a box drawn around a link was stored as a
+fraction of the too-wide element, and the export (which uses fractions
+of the true video) only blurred about 80% of it, the right end staying
+visible. The preview looked right because it rendered the same
+fractions on the same too-wide overlay. The overlay now fits the
+displayed picture exactly, so what you draw is what gets blurred.
+Boxes drawn in 0.2.6 on a short screen already have the too-narrow
+width saved in them — re-draw those in 0.2.7 (or widen them by eye);
+the app cannot know the old factor retroactively. There is also a
+Fullscreen button on the preview (the whole video area, boxes
+included, so drawing still works while fullscreen), and the stray
+console window that used to open next to the app on Windows is hidden
+once the app window opens — the console still shows for CLI use
+(scan/blur/serve --no-browser).
+
 ## Build from source
 
 ```
