@@ -109,7 +109,7 @@ function renderRegions() {
   (currentJob.regions || []).forEach(r => {
     const tr = document.createElement('tr');
     tr.innerHTML = '<td><input type="checkbox" ' + (r.enabled ? 'checked' : '') + ' data-id="' + r.id + '" class="toggle"></td>' +
-      '<td>' + esc(r.label) + '</td><td>' + fmtTime(r.start) + '–' + fmtTime(r.end) + '</td>' +
+      '<td>' + esc(r.label) + '</td><td>' + esc(r.source || 'auto') + '</td><td>' + fmtTime(r.start) + '–' + fmtTime(r.end) + '</td>' +
       '<td title="' + esc(r.text) + '">' + esc(r.text || '') + '</td>' +
       '<td><button data-id="' + r.id + '" class="del">✕</button></td>';
     tbody.appendChild(tr);
@@ -183,6 +183,20 @@ $('#scanBtn').onclick = async () => {
   try { await api('/api/jobs/' + currentJob.id + '/scan', { method: 'POST' }); $('#scanMsg').textContent = 'Scanning… this takes a while for long videos.'; }
   catch (e) { $('#scanMsg').textContent = 'Scan failed: ' + e.message; }
 };
+// "What does the scan see here?" — OCR one frame at the video's
+// current time and show the raw words, so you can check the scan can
+// actually read your screen before trusting (or blaming) it.
+$('#ocrPreviewBtn').onclick = async () => {
+  if (!currentJob) return;
+  const box = $('#ocrPreview'); box.hidden = false;
+  box.textContent = 'Reading this frame…';
+  try {
+    const v = $('#video');
+    const d = await api('/api/jobs/' + currentJob.id + '/ocr-preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ time: v.currentTime || 0 }) });
+    if (!d.words || !d.words.length) { box.textContent = 'At ' + fmtTime(d.time) + ' the scan sees no readable text.'; return; }
+    box.textContent = 'At ' + fmtTime(d.time) + ' the scan reads: ' + d.words.map(w => w.text + ' (' + w.conf + ')').join(' · ');
+  } catch (e) { box.textContent = 'Could not read this frame: ' + e.message; }
+};
 $('#exportBtn').onclick = async () => {
   if (!currentJob) return;
   try { await api('/api/jobs/' + currentJob.id + '/export', { method: 'POST' }); $('#progress').textContent = 'Exporting…'; }
@@ -251,13 +265,14 @@ async function loadSettings() {
   $('#setInterval').value = String(c.scanInterval); $('#setBlur').value = c.blurStrength; $('#blurVal').textContent = c.blurStrength;
   $('#patUrl').checked = !!c.patterns.url; $('#patEmail').checked = !!c.patterns.email;
   $('#patPassword').checked = !!c.patterns.password; $('#patApikey').checked = !!c.patterns.apikey;
+  $('#patSuspicious').checked = !!c.patterns.suspicious;
   $('#setKeywords').value = (c.keywords || []).join('\n');
 }
 $('#setBlur').oninput = e => $('#blurVal').textContent = e.target.value;
 $('#saveSettings').onclick = async () => {
   const cfg = { port: 8080, scanInterval: parseFloat($('#setInterval').value), blurStrength: parseInt($('#setBlur').value, 10),
     keywords: $('#setKeywords').value.split('\n').map(s => s.trim()).filter(Boolean),
-    patterns: { url: $('#patUrl').checked, email: $('#patEmail').checked, password: $('#patPassword').checked, apikey: $('#patApikey').checked },
+    patterns: { url: $('#patUrl').checked, email: $('#patEmail').checked, password: $('#patPassword').checked, apikey: $('#patApikey').checked, suspicious: $('#patSuspicious').checked },
     ffmpegPath: ($('#toolFfmpeg') ? $('#toolFfmpeg').value.trim() : ''), tesseractPath: ($('#toolTesseract') ? $('#toolTesseract').value.trim() : '') };
   await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) });
   $('#settingsMsg').textContent = 'Saved.';
