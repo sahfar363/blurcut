@@ -38,7 +38,7 @@ type JobStore struct {
 	jobs map[string]*Job
 }
 
-func openJobStore(dataDir string) (*JobStore, error) {
+func openJobStore(dataDir string, tools Tools) (*JobStore, error) {
 	s := &JobStore{dir: dataDir, jobs: map[string]*Job{}}
 	for _, sub := range []string{"uploads", "exports"} {
 		if err := os.MkdirAll(filepath.Join(dataDir, sub), 0o755); err != nil {
@@ -71,7 +71,20 @@ func openJobStore(dataDir string) (*JobStore, error) {
 				j.ExportPath = filepath.Join(dataDir, "exports", j.ID+"_blurred.mp4")
 				j.PreviewPath = filepath.Join(dataDir, "uploads", j.ID+"_preview.mp4")
 				if st, err := os.Stat(j.ExportPath); err == nil && st.Size() > 0 {
-					j.HasExport = true
+					// A partial or broken export left over from an older
+					// version must not come back as a download link: check
+					// it is really a playable video, and delete it if it
+					// is not. Without ffmpeg/ffprobe available, fall back
+					// to the size check.
+					valid := true
+					if tools.FFmpeg != "" || tools.FFprobe != "" {
+						valid = verifyExport(tools, j.ExportPath) == nil
+					}
+					if valid {
+						j.HasExport = true
+					} else {
+						_ = os.Remove(j.ExportPath)
+					}
 				}
 				if _, err := os.Stat(j.PreviewPath); err == nil {
 					j.PreviewConverted = true
