@@ -511,7 +511,19 @@ func (s *server) deleteRegion(j *Job, rid string) {
 }
 
 func (s *server) updateRegion(w http.ResponseWriter, r *http.Request, j *Job, rid string) {
-	var upd Region
+	// Pointers for the optional fields: a POST that only changes the
+	// time range must not clobber Enabled (or the box) with zero
+	// values, and a start of 0 must be distinguishable from "not sent".
+	var upd struct {
+		Label   string   `json:"label"`
+		Enabled *bool    `json:"enabled"`
+		Start   *float64 `json:"start"`
+		End     *float64 `json:"end"`
+		X       int      `json:"x"`
+		Y       int      `json:"y"`
+		W       int      `json:"w"`
+		H       int      `json:"h"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&upd); err != nil {
 		http.Error(w, "bad json", 400)
 		return
@@ -521,9 +533,28 @@ func (s *server) updateRegion(w http.ResponseWriter, r *http.Request, j *Job, ri
 			if upd.Label != "" {
 				j.Regions[i].Label = upd.Label
 			}
-			j.Regions[i].Enabled = upd.Enabled
-			if upd.Start != 0 || upd.End != 0 {
-				j.Regions[i].Start, j.Regions[i].End = upd.Start, upd.End
+			if upd.Enabled != nil {
+				j.Regions[i].Enabled = *upd.Enabled
+			}
+			if upd.Start != nil || upd.End != nil {
+				start, end := j.Regions[i].Start, j.Regions[i].End
+				if upd.Start != nil {
+					start = *upd.Start
+				}
+				if upd.End != nil {
+					end = *upd.End
+				}
+				if start < 0 {
+					start = 0
+				}
+				if j.Duration > 0 && end > j.Duration {
+					end = j.Duration
+				}
+				if end <= start {
+					http.Error(w, "end must be after start", 400)
+					return
+				}
+				j.Regions[i].Start, j.Regions[i].End = start, end
 			}
 			if upd.W > 0 {
 				j.Regions[i].X, j.Regions[i].Y, j.Regions[i].W, j.Regions[i].H = upd.X, upd.Y, upd.W, upd.H
