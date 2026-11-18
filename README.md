@@ -103,8 +103,19 @@ mp4, and the download is now always named `blurred-<name>.mp4` — in
 the name and refused to open a perfectly valid file. Every export is
 also verified before it is offered (file exists, non-empty, probes as
 a video with a duration); a bad export is reported as an error with
-the reason instead of a silent "done". The version (e.g. v0.2.4) is
+the reason instead of a silent "done". The version (e.g. v0.2.5) is
 shown in the header so you can check which build you are running.
+
+**Auto-scan keeps your manual boxes.** In 0.2.4 and earlier, pressing
+Auto-scan replaced the whole region list, so boxes you had drawn by
+hand were wiped. Auto-scan now only replaces the auto-detected
+regions; manual boxes are kept (a fresh scan hit that duplicates a
+manual box is dropped in favour of yours). Old jobs also remember
+their regions and exports between restarts — if an export file left
+over from an older version turns out to be broken when the app
+starts, it is deleted instead of being offered as a download. Jobs
+can be removed from the list with the "Delete job" button, which
+deletes the job and its files.
 
 ## Build from source
 
