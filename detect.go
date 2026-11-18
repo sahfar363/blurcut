@@ -11,20 +11,20 @@ import (
 // Region is one blur target: a box (pixels + relative 0-1) over a time range.
 type Region struct {
 	ID      string  `json:"id"`
-	Label   string  `json:"label"`
-	Text    string  `json:"text"`
+	Label   string  `json:"label"` // url, email, password, apikey, keyword, manual
+	Text    string  `json:"text"`  // matched text (redacted in UI if long)
 	X       int     `json:"x"`
 	Y       int     `json:"y"`
 	W       int     `json:"w"`
 	H       int     `json:"h"`
-	RX      float64 `json:"rx"`
+	RX      float64 `json:"rx"` // relative 0-1
 	RY      float64 `json:"ry"`
 	RW      float64 `json:"rw"`
 	RH      float64 `json:"rh"`
-	Start   float64 `json:"start"`
+	Start   float64 `json:"start"` // seconds
 	End     float64 `json:"end"`
 	Enabled bool    `json:"enabled"`
-	Source  string  `json:"source"`
+	Source  string  `json:"source"` // auto | manual
 }
 
 // Detection is one merged scan hit; converted to a Region on scan completion.
@@ -100,6 +100,7 @@ type OCRWord struct {
 }
 
 // groupWords merges adjacent words on the same line into one box.
+// Words within 40px horizontally and 12px vertically of the current box join it.
 func groupWords(words []OCRWord) []OCRWord {
 	if len(words) == 0 {
 		return nil
@@ -117,6 +118,7 @@ func groupWords(words []OCRWord) []OCRWord {
 		sameLine := abs(w.Y-cur.Y) <= 12
 		near := w.X <= cur.X+cur.W+40
 		if sameLine && near {
+			// extend cur box to include w
 			right := max(cur.X+cur.W, w.X+w.W)
 			bottom := max(cur.Y+cur.H, w.Y+w.H)
 			cur.X = min(cur.X, w.X)
@@ -142,6 +144,7 @@ func abs(n int) int {
 	return n
 }
 
+// boxesOverlap reports whether two regions overlap at all.
 func boxesOverlap(a, b Region) bool {
 	return a.X < b.X+b.W && b.X < a.X+a.W && a.Y < b.Y+b.H && b.Y < a.Y+a.H
 }
@@ -215,6 +218,7 @@ func mergeTimeRanges(dets []Detection) []Detection {
 			if o.Label == d.Label && iou(o.Region, d.Region) > 0.3 && d.Start-o.End < 2 {
 				o.End = maxFloat(o.End, d.End)
 				o.Frames += d.Frames
+				// keep the larger box
 				if d.W*d.H > o.W*o.H {
 					o.X, o.Y, o.W, o.H = d.X, d.Y, d.W, d.H
 				}
@@ -234,6 +238,34 @@ func maxFloat(a, b float64) float64 {
 		return a
 	}
 	return b
+}
+
+// mergeScanRegions merges fresh auto-scan results into the existing region
+// list: manual boxes are always kept, old auto regions are replaced by the
+// fresh scan, and a fresh region that duplicates a kept manual box is
+// dropped in favour of the manual one — heavy overlap (IoU > 0.5), or the
+// same label on a near-identical box (IoU > 0.3).
+func mergeScanRegions(existing, fresh []Region) []Region {
+	var manuals []Region
+	for _, r := range existing {
+		if r.Source == "manual" {
+			manuals = append(manuals, r)
+		}
+	}
+	out := append([]Region(nil), manuals...)
+	for _, f := range fresh {
+		dup := false
+		for _, m := range manuals {
+			if iou(m, f) > 0.5 || (m.Label != "" && m.Label == f.Label && iou(m, f) > 0.3) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // pixelToRelative fills RX/RY/RW/RH from X/Y/W/H given the frame size.
