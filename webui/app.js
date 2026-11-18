@@ -188,6 +188,16 @@ $('#exportBtn').onclick = async () => {
   try { await api('/api/jobs/' + currentJob.id + '/export', { method: 'POST' }); $('#progress').textContent = 'Exporting…'; }
   catch (e) { $('#progress').textContent = 'Export failed: ' + e.message; }
 };
+$('#deleteJobBtn').onclick = async () => {
+  if (!currentJob) return;
+  if (!confirm('Delete this job and its files?')) return;
+  try { await api('/api/jobs/' + currentJob.id, { method: 'DELETE' }); }
+  catch (e) { $('#progress').textContent = 'Delete failed: ' + e.message; return; }
+  clearInterval(pollTimer);
+  currentJob = null;
+  $('#previewCard').hidden = true;
+  loadJobs();
+};
 
 // draw a manual box on the video (only while drawing mode is on)
 $('#drawToggleBtn').onclick = () => setDrawMode(!drawMode);
